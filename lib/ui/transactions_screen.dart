@@ -217,13 +217,17 @@ class CategoryTransactionsScreen extends StatelessWidget {
     super.key,
     required this.category,
     required this.cycles,
+    this.endAgo = 0,
     required this.periodLabel,
   });
 
   final SpendCategory category;
 
-  /// Number of billing cycles to include (current = 1); null = all time.
+  /// Number of billing cycles to include; null = all time.
   final int? cycles;
+
+  /// Cycles before the current one at which the window ends (0 = current).
+  final int endAgo;
   final String periodLabel;
 
   @override
@@ -231,7 +235,7 @@ class CategoryTransactionsScreen extends StatelessWidget {
     final app = context.watch<AppState>();
     final a = app.analytics;
     final list = a
-        .transactionsInCycles(cycles)
+        .transactionsInCycles(cycles, endAgo: endAgo)
         .where((t) => t.category == category)
         .toList();
     final text = Theme.of(context).textTheme;

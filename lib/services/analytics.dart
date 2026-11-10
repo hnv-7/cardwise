@@ -91,17 +91,23 @@ class CashbackSummary {
       (estimatedMinor - creditedMinor).clamp(0, 1 << 62).toInt();
 }
 
-/// One card's spend and estimated cashback in a single billing cycle.
+/// One card's spend and estimated cashback over a window of billing cycles.
 class CycleSummary {
   const CycleSummary({
     required this.card,
-    required this.cycle,
+    required this.from,
+    required this.lastDay,
     required this.spendMinor,
     required this.cashbackMinor,
   });
 
   final CardProfile card;
-  final BillingCycle cycle;
+
+  /// First day of the window; null for all time.
+  final DateTime? from;
+
+  /// Last day (statement date) of the newest cycle in the window.
+  final DateTime lastDay;
   final int spendMinor;
   final int cashbackMinor;
 }
@@ -168,15 +174,24 @@ class Analytics {
   BillingCycle _cycleOf(TxnRecord t) =>
       BillingCycle.containing(t.timestamp, _billingDayOf(t.cardId));
 
-  /// Transactions from the current billing cycle (or the last [cycles]
-  /// cycles including the current one) of each transaction's own card.
+  /// Transactions from [cycles] billing cycles of each transaction's own
+  /// card, ending [endAgo] cycles before the current one (0 = the window ends
+  /// with the current cycle, 1 = it ends with the last completed cycle).
   /// [cycles] null means all time.
-  List<TxnRecord> transactionsInCycles(int? cycles, {DateTime? now}) {
+  List<TxnRecord> transactionsInCycles(
+    int? cycles, {
+    DateTime? now,
+    int endAgo = 0,
+  }) {
     final clock = now ?? DateTime.now();
     return transactions().where((t) {
       if (cycles == null) return true;
       final current = BillingCycle.containing(clock, _billingDayOf(t.cardId));
-      return !t.timestamp.isBefore(current.plus(1 - cycles).start);
+      if (t.timestamp.isBefore(current.plus(1 - cycles - endAgo).start)) {
+        return false;
+      }
+      return endAgo == 0 ||
+          t.timestamp.isBefore(current.plus(1 - endAgo).start);
     }).toList();
   }
 
@@ -278,30 +293,45 @@ class Analytics {
     return out;
   }
 
-  /// Spend and estimated cashback of each card for its most recently
-  /// completed billing cycle (the one before the current cycle).
-  List<CycleSummary> lastCycleSummaries({DateTime? now}) {
+  /// Spend and estimated cashback of each card over [cycles] of its own
+  /// billing cycles ending [endAgo] cycles before the current one.
+  /// [cycles] null means all time.
+  List<CycleSummary> periodSummaries(
+    int? cycles, {
+    DateTime? now,
+    int endAgo = 0,
+  }) {
     final clock = now ?? DateTime.now();
     return [
       for (final card in data.cards)
         () {
-          final cycle = BillingCycle.containing(
-            clock,
-            card.billingDay,
-          ).plus(-1);
+          final current = BillingCycle.containing(clock, card.billingDay);
+          final newest = current.plus(-endAgo);
+          final oldest = cycles == null
+              ? null
+              : current.plus(1 - cycles - endAgo);
+          final summary = cashbackFor(card);
           final spend = _inCurrency
               .where(
                 (t) =>
                     t.cardId == card.id &&
-                    !t.timestamp.isBefore(cycle.start) &&
-                    t.timestamp.isBefore(cycle.end),
+                    (oldest == null || !t.timestamp.isBefore(oldest.start)) &&
+                    (endAgo == 0 || t.timestamp.isBefore(newest.end)),
               )
               .fold<int>(0, (s, t) => s + t.amountMinor);
+          var cashback = 0;
+          summary.perCycle.forEach((k, v) {
+            final inWindow =
+                (oldest == null || k.compareTo(oldest.key) >= 0) &&
+                (endAgo == 0 || k.compareTo(newest.key) <= 0);
+            if (inWindow) cashback += v;
+          });
           return CycleSummary(
             card: card,
-            cycle: cycle,
+            from: oldest?.start,
+            lastDay: newest.lastDay,
             spendMinor: spend,
-            cashbackMinor: cashbackFor(card).perCycle[cycle.key] ?? 0,
+            cashbackMinor: cashback,
           );
         }(),
     ];

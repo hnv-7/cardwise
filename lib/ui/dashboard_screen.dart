@@ -7,27 +7,32 @@ import '../models/category.dart';
 import '../services/analytics.dart';
 import '../state/app_state.dart';
 import '../util/money.dart';
-import 'cards_screen.dart' show cycleLabel;
 import 'transactions_screen.dart' show CategoryTransactionsScreen;
 import 'widgets.dart';
 
-enum Period { thisCycle, last3, last6, all }
+enum Period { thisCycle, lastCycle, last3, last6, all }
 
 extension on Period {
   String get label => switch (this) {
     Period.thisCycle => 'This cycle',
+    Period.lastCycle => 'Last cycle',
     Period.last3 => '3 cycles',
     Period.last6 => '6 cycles',
     Period.all => 'All time',
   };
 
-  /// Number of billing cycles to include (current one counts as 1).
+  /// Number of billing cycles to include.
   int? get cycles => switch (this) {
     Period.thisCycle => 1,
+    Period.lastCycle => 1,
     Period.last3 => 3,
     Period.last6 => 6,
     Period.all => null,
   };
+
+  /// How many cycles before the current one the window ends
+  /// (0 = ends with the current cycle, 1 = ends with the last completed one).
+  int get endAgo => this == Period.lastCycle ? 1 : 0;
 }
 
 class DashboardScreen extends StatefulWidget {
@@ -59,37 +64,39 @@ class _DashboardScreenState extends State<DashboardScreen> {
       );
     }
 
-    final txns = a.transactionsInCycles(_period.cycles, now: now);
+    final txns = a.transactionsInCycles(
+      _period.cycles,
+      now: now,
+      endAgo: _period.endAgo,
+    );
     final total = a.total(txns);
     final byCat = a.byCategory(txns).entries.toList()
       ..sort((x, y) => y.value.compareTo(x.value));
     final byCard = a.byCard(txns).entries.toList()
       ..sort((x, y) => y.value.compareTo(x.value));
     final trend = a.cycleTrend(a.transactions(), cycles: 6, now: now);
-    final cashback = app.data.cards.fold<int>(
-      0,
-      (s, c) => s + a.cashbackFor(c).estimatedMinor,
+    final summaries = a.periodSummaries(
+      _period.cycles,
+      now: now,
+      endAgo: _period.endAgo,
     );
+    final cashback = summaries.fold<int>(0, (s, e) => s + e.cashbackMinor);
 
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 96),
       children: [
-        SegmentedButton<Period>(
-          showSelectedIcon: false,
-          segments: [
+        Wrap(
+          spacing: 8,
+          children: [
             for (final p in Period.values)
-              ButtonSegment(value: p, label: Text(p.label, maxLines: 1)),
+              ChoiceChip(
+                label: Text(p.label),
+                selected: _period == p,
+                onSelected: (_) => setState(() => _period = p),
+              ),
           ],
-          selected: {_period},
-          onSelectionChanged: (s) => setState(() => _period = s.first),
-          style: const ButtonStyle(
-            visualDensity: VisualDensity.compact,
-            padding: WidgetStatePropertyAll(
-              EdgeInsets.symmetric(horizontal: 4),
-            ),
-          ),
         ),
-        const SizedBox(height: 12),
+        const SizedBox(height: 8),
         Row(
           children: [
             Expanded(
@@ -102,19 +109,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
             const SizedBox(width: 12),
             Expanded(
               child: StatTile(
-                label: 'Est. cashback (all time)',
+                label: 'Est. cashback',
                 value: formatMinor(cashback, cur),
-                hint: app.data.cards.isEmpty ? 'Add a card' : null,
+                hint: app.data.cards.isEmpty ? 'Add a card' : _period.label,
               ),
             ),
           ],
         ),
         if (app.data.cards.isNotEmpty) ...[
-          const SectionTitle('Last billing cycle'),
-          _LastCycleCard(
-            summaries: a.lastCycleSummaries(now: now),
-            currency: cur,
-          ),
+          SectionTitle('Spend & cashback by card \u00B7 ${_period.label}'),
+          _CardSummaries(summaries: summaries, currency: cur),
         ],
         if (a.excludedForeignCount > 0)
           Padding(
@@ -153,55 +157,29 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 }
 
-class _LastCycleCard extends StatelessWidget {
-  const _LastCycleCard({required this.summaries, required this.currency});
+/// Spend and estimated cashback of each card for the selected period, over
+/// that card's own billing cycles.
+class _CardSummaries extends StatelessWidget {
+  const _CardSummaries({required this.summaries, required this.currency});
   final List<CycleSummary> summaries;
   final String currency;
+
+  static String _range(CycleSummary s) {
+    final f = DateFormat('d MMM');
+    return s.from == null
+        ? 'Up to ${f.format(s.lastDay)}'
+        : '${f.format(s.from!)} - ${f.format(s.lastDay)}';
+  }
 
   @override
   Widget build(BuildContext context) {
     final text = Theme.of(context).textTheme;
-    final spend = summaries.fold<int>(0, (s, e) => s + e.spendMinor);
-    final cashback = summaries.fold<int>(0, (s, e) => s + e.cashbackMinor);
     return Card(
       child: Padding(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
-              children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text('Spend', style: text.labelMedium),
-                      const SizedBox(height: 2),
-                      Text(
-                        formatMinor(spend, currency),
-                        style: text.titleLarge,
-                      ),
-                    ],
-                  ),
-                ),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text('Est. cashback', style: text.labelMedium),
-                      const SizedBox(height: 2),
-                      Text(
-                        formatMinor(cashback, currency),
-                        style: text.titleLarge,
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 4),
-            Text('All cards combined', style: text.bodySmall),
-            const Divider(height: 24),
             for (final s in summaries)
               Padding(
                 padding: const EdgeInsets.symmetric(vertical: 6),
@@ -217,7 +195,7 @@ class _LastCycleCard extends StatelessWidget {
                             s.card.displayName,
                             overflow: TextOverflow.ellipsis,
                           ),
-                          Text(cycleLabel(s.cycle), style: text.bodySmall),
+                          Text(_range(s), style: text.bodySmall),
                         ],
                       ),
                     ),
@@ -241,7 +219,7 @@ class _LastCycleCard extends StatelessWidget {
   }
 }
 
-class _CategoryChart extends StatelessWidget {
+class _CategoryChart extends StatefulWidget {
   const _CategoryChart({
     required this.entries,
     required this.total,
@@ -254,61 +232,152 @@ class _CategoryChart extends StatelessWidget {
   final Period period;
 
   @override
+  State<_CategoryChart> createState() => _CategoryChartState();
+}
+
+class _CategoryChartState extends State<_CategoryChart> {
+  SpendCategory? _selected;
+
+  void _open(SpendCategory c) => Navigator.push(
+    context,
+    MaterialPageRoute<void>(
+      builder: (_) => CategoryTransactionsScreen(
+        category: c,
+        cycles: widget.period.cycles,
+        endAgo: widget.period.endAgo,
+        periodLabel: widget.period.label,
+      ),
+    ),
+  );
+
+  @override
   Widget build(BuildContext context) {
+    final text = Theme.of(context).textTheme;
+    final entries = widget.entries;
+    final total = widget.total;
+    // Selection is dropped when its category disappears from the period.
+    final selected = entries.any((e) => e.key == _selected) ? _selected : null;
+    final selectedEntry = selected == null
+        ? null
+        : entries.firstWhere((e) => e.key == selected);
+
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
           children: [
             SizedBox(
-              height: 180,
-              child: PieChart(
-                PieChartData(
-                  sectionsSpace: 2,
-                  centerSpaceRadius: 46,
-                  sections: [
-                    for (final e in entries)
-                      PieChartSectionData(
-                        value: e.value.toDouble(),
-                        color: e.key.color,
-                        radius: 36,
-                        showTitle: false,
+              height: 200,
+              child: Stack(
+                alignment: Alignment.center,
+                children: [
+                  PieChart(
+                    PieChartData(
+                      sectionsSpace: 2,
+                      centerSpaceRadius: 56,
+                      pieTouchData: PieTouchData(
+                        touchCallback: (event, response) {
+                          if (event is! FlTapUpEvent) return;
+                          final i =
+                              response?.touchedSection?.touchedSectionIndex ??
+                              -1;
+                          setState(() {
+                            if (i < 0 || i >= entries.length) {
+                              _selected = null;
+                            } else {
+                              final c = entries[i].key;
+                              _selected = c == selected ? null : c;
+                            }
+                          });
+                        },
                       ),
-                  ],
-                ),
+                      sections: [
+                        for (final e in entries)
+                          PieChartSectionData(
+                            value: e.value.toDouble(),
+                            color: e.key.color,
+                            radius: e.key == selected ? 48 : 36,
+                            showTitle: false,
+                          ),
+                      ],
+                    ),
+                  ),
+                  IgnorePointer(
+                    child: SizedBox(
+                      width: 96,
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (selectedEntry != null)
+                            Icon(
+                              selectedEntry.key.icon,
+                              size: 20,
+                              color: selectedEntry.key.color,
+                            ),
+                          Text(
+                            selectedEntry?.key.label ?? 'Total',
+                            style: text.labelMedium,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          Text(
+                            formatMinorCompact(
+                              selectedEntry?.value ?? total,
+                              widget.currency,
+                            ),
+                            style: text.titleMedium,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          if (selectedEntry != null)
+                            Text(
+                              '${(selectedEntry.value * 100 / total).toStringAsFixed(0)}%',
+                              style: text.bodySmall,
+                            ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
-            const SizedBox(height: 12),
+            if (selected != null)
+              TextButton.icon(
+                onPressed: () => _open(selected),
+                icon: const Icon(Icons.list_alt_outlined),
+                label: Text('View ${selected.label} spends'),
+              )
+            else
+              Text('Tap a slice or a category below', style: text.bodySmall),
+            const SizedBox(height: 4),
             for (final e in entries)
               InkWell(
                 borderRadius: BorderRadius.circular(8),
-                onTap: () => Navigator.push(
-                  context,
-                  MaterialPageRoute<void>(
-                    builder: (_) => CategoryTransactionsScreen(
-                      category: e.key,
-                      cycles: period.cycles,
-                      periodLabel: period.label,
-                    ),
+                onTap: () => _open(e.key),
+                child: Container(
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(8),
+                    color: e.key == selected
+                        ? e.key.color.withValues(alpha: 0.12)
+                        : null,
                   ),
-                ),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 6),
+                  padding: const EdgeInsets.symmetric(
+                    vertical: 6,
+                    horizontal: 4,
+                  ),
                   child: Row(
                     children: [
                       CategoryAvatar(e.key, size: 30),
                       const SizedBox(width: 12),
                       Expanded(child: Text(e.key.label)),
                       Text(
-                        formatMinor(e.value, currency),
-                        style: Theme.of(context).textTheme.bodyMedium,
+                        formatMinor(e.value, widget.currency),
+                        style: text.bodyMedium,
                       ),
                       SizedBox(
                         width: 52,
                         child: Text(
                           '${(e.value * 100 / total).toStringAsFixed(0)}%',
                           textAlign: TextAlign.right,
-                          style: Theme.of(context).textTheme.bodySmall,
+                          style: text.bodySmall,
                         ),
                       ),
                       const Icon(Icons.chevron_right, size: 18),

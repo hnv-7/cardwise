@@ -473,26 +473,71 @@ void main() {
       expect(c.end, DateTime(2024, 3, 1));
     });
 
-    test('last cycle summary uses each card\'s previous completed cycle', () {
+    group('period summaries', () {
       // Billing day 15, now 20 Nov -> current cycle 15 Nov-14 Dec,
-      // last cycle 15 Oct-14 Nov.
-      final c = card(15, cap: 6000);
+      // last cycle 15 Oct-14 Nov, cycle before that 15 Sep-14 Oct.
+      // Dining earns 5% with a 6000 cap per cycle.
+      final now = DateTime(2024, 11, 20);
       final data = VaultData(
-        cards: [c],
+        cards: [card(15, cap: 6000)],
         transactions: [
-          txn('a', 100000, DateTime(2024, 10, 14)), // before last cycle
-          txn('b', 100000, DateTime(2024, 10, 15)), // last cycle: 5000 cb
-          txn('c', 100000, DateTime(2024, 11, 14, 23)), // capped: 1000 cb
-          txn('d', 100000, DateTime(2024, 11, 15)), // current cycle
+          txn('s', 100000, DateTime(2024, 9, 20)), // Sep cycle: 5000 cb
+          txn('a', 100000, DateTime(2024, 10, 14)), // Sep cycle: 1000 cb (cap)
+          txn('b', 100000, DateTime(2024, 10, 15)), // Oct cycle: 5000 cb
+          txn('c', 100000, DateTime(2024, 11, 14, 23)), // Oct cycle: 1000 cb
+          txn('d', 100000, DateTime(2024, 11, 15)), // Nov (current): 5000 cb
           txn('e', 100000, DateTime(2024, 11, 1), cardId: null), // unassigned
         ],
       );
-      final s = Analytics(data)
-          .lastCycleSummaries(now: DateTime(2024, 11, 20))
-          .single;
-      expect(s.cycle.start, DateTime(2024, 10, 15));
-      expect(s.spendMinor, 200000);
-      expect(s.cashbackMinor, 6000); // 5000 + 1000, cap of 6000 reached
+      CycleSummary one(int? cycles, {int endAgo = 0}) =>
+          Analytics(data)
+              .periodSummaries(cycles, now: now, endAgo: endAgo)
+              .single;
+
+      test('this cycle', () {
+        final s = one(1);
+        expect(s.from, DateTime(2024, 11, 15));
+        expect(s.lastDay, DateTime(2024, 12, 14));
+        expect(s.spendMinor, 100000);
+        expect(s.cashbackMinor, 5000);
+      });
+
+      test('last cycle is the previous completed cycle only', () {
+        final s = one(1, endAgo: 1);
+        expect(s.from, DateTime(2024, 10, 15));
+        expect(s.lastDay, DateTime(2024, 11, 14));
+        expect(s.spendMinor, 200000);
+        expect(s.cashbackMinor, 6000); // 5000 + 1000, cap reached
+      });
+
+      test('3 cycles includes the current one', () {
+        final s = one(3);
+        expect(s.from, DateTime(2024, 9, 15));
+        expect(s.spendMinor, 500000);
+        expect(s.cashbackMinor, 17000); // 6000 + 6000 + 5000
+      });
+
+      test('all time', () {
+        final s = one(null);
+        expect(s.from, isNull);
+        expect(s.spendMinor, 500000);
+        expect(s.cashbackMinor, 17000);
+      });
+    });
+
+    test('transactionsInCycles last cycle excludes the current cycle', () {
+      final data = VaultData(
+        cards: [card(15)],
+        transactions: [
+          txn('old', 100, DateTime(2024, 10, 14)),
+          txn('last', 100, DateTime(2024, 10, 20)),
+          txn('cur', 100, DateTime(2024, 11, 16)),
+        ],
+      );
+      final ids = Analytics(data)
+          .transactionsInCycles(1, now: DateTime(2024, 11, 20), endAgo: 1)
+          .map((t) => t.id);
+      expect(ids, ['last']);
     });
 
     test('cap resets on the billing day, not the 1st', () {
