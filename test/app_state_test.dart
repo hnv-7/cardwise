@@ -473,6 +473,28 @@ void main() {
       expect(c.end, DateTime(2024, 3, 1));
     });
 
+    test('last cycle summary uses each card\'s previous completed cycle', () {
+      // Billing day 15, now 20 Nov -> current cycle 15 Nov-14 Dec,
+      // last cycle 15 Oct-14 Nov.
+      final c = card(15, cap: 6000);
+      final data = VaultData(
+        cards: [c],
+        transactions: [
+          txn('a', 100000, DateTime(2024, 10, 14)), // before last cycle
+          txn('b', 100000, DateTime(2024, 10, 15)), // last cycle: 5000 cb
+          txn('c', 100000, DateTime(2024, 11, 14, 23)), // capped: 1000 cb
+          txn('d', 100000, DateTime(2024, 11, 15)), // current cycle
+          txn('e', 100000, DateTime(2024, 11, 1), cardId: null), // unassigned
+        ],
+      );
+      final s = Analytics(data)
+          .lastCycleSummaries(now: DateTime(2024, 11, 20))
+          .single;
+      expect(s.cycle.start, DateTime(2024, 10, 15));
+      expect(s.spendMinor, 200000);
+      expect(s.cashbackMinor, 6000); // 5000 + 1000, cap of 6000 reached
+    });
+
     test('cap resets on the billing day, not the 1st', () {
       // Cycle starts on the 15th, cap 6000 (= 60.00).
       final c = card(15, cap: 6000);
@@ -756,10 +778,7 @@ void main() {
         ),
         isEmpty,
       );
-      expect(
-        app.data.transactions.every((t) => t.cardId == other.id),
-        isTrue,
-      );
+      expect(app.data.transactions.every((t) => t.cardId == other.id), isTrue);
     });
 
     test('bulk assign rejects an unknown card', () async {

@@ -91,6 +91,21 @@ class CashbackSummary {
       (estimatedMinor - creditedMinor).clamp(0, 1 << 62).toInt();
 }
 
+/// One card's spend and estimated cashback in a single billing cycle.
+class CycleSummary {
+  const CycleSummary({
+    required this.card,
+    required this.cycle,
+    required this.spendMinor,
+    required this.cashbackMinor,
+  });
+
+  final CardProfile card;
+  final BillingCycle cycle;
+  final int spendMinor;
+  final int cashbackMinor;
+}
+
 class Analytics {
   Analytics(this.data);
 
@@ -261,6 +276,35 @@ class Analytics {
       out.add((k, running));
     }
     return out;
+  }
+
+  /// Spend and estimated cashback of each card for its most recently
+  /// completed billing cycle (the one before the current cycle).
+  List<CycleSummary> lastCycleSummaries({DateTime? now}) {
+    final clock = now ?? DateTime.now();
+    return [
+      for (final card in data.cards)
+        () {
+          final cycle = BillingCycle.containing(
+            clock,
+            card.billingDay,
+          ).plus(-1);
+          final spend = _inCurrency
+              .where(
+                (t) =>
+                    t.cardId == card.id &&
+                    !t.timestamp.isBefore(cycle.start) &&
+                    t.timestamp.isBefore(cycle.end),
+              )
+              .fold<int>(0, (s, t) => s + t.amountMinor);
+          return CycleSummary(
+            card: card,
+            cycle: cycle,
+            spendMinor: spend,
+            cashbackMinor: cashbackFor(card).perCycle[cycle.key] ?? 0,
+          );
+        }(),
+    ];
   }
 
   int totalEstimatedCashback() =>

@@ -7,6 +7,7 @@ import '../models/category.dart';
 import '../services/analytics.dart';
 import '../state/app_state.dart';
 import '../util/money.dart';
+import 'cards_screen.dart' show cycleLabel;
 import 'widgets.dart';
 
 enum Period { thisCycle, last3, last6, all }
@@ -107,6 +108,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ),
           ],
         ),
+        if (app.data.cards.isNotEmpty) ...[
+          const SectionTitle('Last billing cycle'),
+          _LastCycleCard(
+            summaries: a.lastCycleSummaries(now: now),
+            currency: cur,
+          ),
+        ],
         if (a.excludedForeignCount > 0)
           Padding(
             padding: const EdgeInsets.only(top: 8),
@@ -135,6 +143,94 @@ class _DashboardScreenState extends State<DashboardScreen> {
         else
           _CardBreakdown(entries: byCard, total: total, currency: cur),
       ],
+    );
+  }
+}
+
+class _LastCycleCard extends StatelessWidget {
+  const _LastCycleCard({required this.summaries, required this.currency});
+  final List<CycleSummary> summaries;
+  final String currency;
+
+  @override
+  Widget build(BuildContext context) {
+    final text = Theme.of(context).textTheme;
+    final spend = summaries.fold<int>(0, (s, e) => s + e.spendMinor);
+    final cashback = summaries.fold<int>(0, (s, e) => s + e.cashbackMinor);
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('Spend', style: text.labelMedium),
+                      const SizedBox(height: 2),
+                      Text(
+                        formatMinor(spend, currency),
+                        style: text.titleLarge,
+                      ),
+                    ],
+                  ),
+                ),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('Est. cashback', style: text.labelMedium),
+                      const SizedBox(height: 2),
+                      Text(
+                        formatMinor(cashback, currency),
+                        style: text.titleLarge,
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text('All cards combined', style: text.bodySmall),
+            const Divider(height: 24),
+            for (final s in summaries)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 6),
+                child: Row(
+                  children: [
+                    CardDot(s.card),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            s.card.displayName,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          Text(cycleLabel(s.cycle), style: text.bodySmall),
+                        ],
+                      ),
+                    ),
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        Text(formatMinor(s.spendMinor, currency)),
+                        Text(
+                          '+ ${formatMinor(s.cashbackMinor, currency)}',
+                          style: text.bodySmall,
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        ),
+      ),
     );
   }
 }
