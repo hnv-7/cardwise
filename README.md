@@ -1,6 +1,29 @@
 # Cardwise
 
 Flutter app (Android + iOS) that tracks credit card spending and cashback.
+Everything stays on your device: there is no account, no server and the app
+has no internet permission.
+
+<p>
+  <img src="docs/screenshots/overview.png" width="19%" alt="Overview">
+  <img src="docs/screenshots/categories.png" width="19%" alt="Interactive category donut">
+  <img src="docs/screenshots/activity.png" width="19%" alt="Activity">
+  <img src="docs/screenshots/cards.png" width="19%" alt="Cards">
+  <img src="docs/screenshots/cashback.png" width="19%" alt="Cashback">
+</p>
+
+Screenshots use made-up sample data (see `tool/screenshots_main.dart`).
+
+## Download (Android)
+
+Get the latest `cardwise.apk` from the
+[Releases page](https://github.com/hnv-7/cardwise/releases/latest), open it on
+your phone and allow "Install unknown apps" for your browser or file manager
+when asked. Check the SHA-256 listed in the release notes against the file.
+
+The APK is signed with a debug key, not a store key, so Android may show an
+"unrecognised developer" warning. iOS builds are not published; build from
+source (see Develop).
 
 ## Features
 
@@ -62,3 +85,7 @@ lib/state       AppState (scan, import, validation, persistence)
 lib/ui          screens and widgets
 android/.../MainActivity.kt   inbox reader (MethodChannel, background thread)
 ```
+
+## License
+
+MIT, see [LICENSE](LICENSE).
