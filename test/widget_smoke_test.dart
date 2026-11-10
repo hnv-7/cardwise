@@ -1,4 +1,7 @@
+import 'dart:ui' show Size;
+
 import 'package:cc_app/main.dart';
+import 'package:cc_app/models/category.dart';
 import 'package:cc_app/services/sms_source.dart';
 import 'package:cc_app/state/app_state.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -43,5 +46,50 @@ void main() {
     await tester.tap(find.text('Cards'));
     await tester.pumpAndSettle();
     expect(find.text('Add a card'), findsOneWidget);
+  });
+
+  testWidgets('tapping a category on Overview lists and edits its spends', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1080, 3000);
+    tester.view.devicePixelRatio = 2.0;
+    addTearDown(tester.view.reset);
+
+    final app = AppState(vault: MemoryVault(), sms: FakeSms([]));
+    await app.load();
+    await app.saveTransaction(
+      cardId: null,
+      amountMinor: 45000,
+      currency: 'INR',
+      merchant: 'Corner Cafe',
+      category: SpendCategory.dining,
+      timestamp: DateTime.now().subtract(const Duration(hours: 1)),
+    );
+    await app.saveTransaction(
+      cardId: null,
+      amountMinor: 99900,
+      currency: 'INR',
+      merchant: 'Big Mart',
+      category: SpendCategory.shopping,
+      timestamp: DateTime.now().subtract(const Duration(hours: 1)),
+    );
+
+    await tester.pumpWidget(
+      ChangeNotifierProvider.value(value: app, child: const CardwiseApp()),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Dining'));
+    await tester.pumpAndSettle();
+
+    // Category detail shows only dining spends, with a total.
+    expect(find.text('Corner Cafe'), findsOneWidget);
+    expect(find.text('Big Mart'), findsNothing);
+    expect(find.textContaining('1 transaction'), findsOneWidget);
+
+    // Tapping a spend opens the editor.
+    await tester.tap(find.text('Corner Cafe'));
+    await tester.pumpAndSettle();
+    expect(find.text('Edit transaction'), findsOneWidget);
   });
 }

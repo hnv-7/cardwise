@@ -8,6 +8,7 @@ import '../services/analytics.dart';
 import '../state/app_state.dart';
 import '../util/money.dart';
 import 'cards_screen.dart' show cycleLabel;
+import 'transactions_screen.dart' show CategoryTransactionsScreen;
 import 'widgets.dart';
 
 enum Period { thisCycle, last3, last6, all }
@@ -131,7 +132,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
             child: Text('No spending in this period.'),
           )
         else
-          _CategoryChart(entries: byCat, total: total, currency: cur),
+          _CategoryChart(
+            entries: byCat,
+            total: total,
+            currency: cur,
+            period: _period,
+          ),
         const SectionTitle('Spend per billing cycle'),
         _TrendChart(trend: trend, currency: cur),
         const SectionTitle('By card'),
@@ -240,10 +246,12 @@ class _CategoryChart extends StatelessWidget {
     required this.entries,
     required this.total,
     required this.currency,
+    required this.period,
   });
   final List<MapEntry<SpendCategory, int>> entries;
   final int total;
   final String currency;
+  final Period period;
 
   @override
   Widget build(BuildContext context) {
@@ -272,26 +280,40 @@ class _CategoryChart extends StatelessWidget {
             ),
             const SizedBox(height: 12),
             for (final e in entries)
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 6),
-                child: Row(
-                  children: [
-                    CategoryAvatar(e.key, size: 30),
-                    const SizedBox(width: 12),
-                    Expanded(child: Text(e.key.label)),
-                    Text(
-                      formatMinor(e.value, currency),
-                      style: Theme.of(context).textTheme.bodyMedium,
+              InkWell(
+                borderRadius: BorderRadius.circular(8),
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute<void>(
+                    builder: (_) => CategoryTransactionsScreen(
+                      category: e.key,
+                      cycles: period.cycles,
+                      periodLabel: period.label,
                     ),
-                    SizedBox(
-                      width: 52,
-                      child: Text(
-                        '${(e.value * 100 / total).toStringAsFixed(0)}%',
-                        textAlign: TextAlign.right,
-                        style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 6),
+                  child: Row(
+                    children: [
+                      CategoryAvatar(e.key, size: 30),
+                      const SizedBox(width: 12),
+                      Expanded(child: Text(e.key.label)),
+                      Text(
+                        formatMinor(e.value, currency),
+                        style: Theme.of(context).textTheme.bodyMedium,
                       ),
-                    ),
-                  ],
+                      SizedBox(
+                        width: 52,
+                        child: Text(
+                          '${(e.value * 100 / total).toStringAsFixed(0)}%',
+                          textAlign: TextAlign.right,
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                      ),
+                      const Icon(Icons.chevron_right, size: 18),
+                    ],
+                  ),
                 ),
               ),
           ],

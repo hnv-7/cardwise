@@ -183,7 +183,9 @@ class _TransactionsScreenState extends State<TransactionsScreen> {
                                       onPressed: () =>
                                           _assignAll(context, app, list),
                                       icon: const Icon(Icons.link),
-                                      label: Text('Assign all (${list.length})'),
+                                      label: Text(
+                                        'Assign all (${list.length})',
+                                      ),
                                     ),
                             const Spacer(),
                             TextButton.icon(
@@ -203,6 +205,82 @@ class _TransactionsScreenState extends State<TransactionsScreen> {
                 ),
         ),
       ],
+    );
+  }
+}
+
+/// Transactions of one category for an Overview period; opened by tapping a
+/// category on the Overview tab. Reads live state, so edits and deletions
+/// are reflected immediately and on returning to Overview.
+class CategoryTransactionsScreen extends StatelessWidget {
+  const CategoryTransactionsScreen({
+    super.key,
+    required this.category,
+    required this.cycles,
+    required this.periodLabel,
+  });
+
+  final SpendCategory category;
+
+  /// Number of billing cycles to include (current = 1); null = all time.
+  final int? cycles;
+  final String periodLabel;
+
+  @override
+  Widget build(BuildContext context) {
+    final app = context.watch<AppState>();
+    final a = app.analytics;
+    final list = a
+        .transactionsInCycles(cycles)
+        .where((t) => t.category == category)
+        .toList();
+    final text = Theme.of(context).textTheme;
+    return Scaffold(
+      appBar: AppBar(title: Text(category.label)),
+      body: SafeArea(
+        child: list.isEmpty
+            ? EmptyState(
+                icon: category.icon,
+                title: 'No ${category.label} transactions',
+                body: 'Nothing in this category for $periodLabel.',
+              )
+            : ListView.separated(
+                padding: const EdgeInsets.only(bottom: 24),
+                itemCount: list.length + 1,
+                separatorBuilder: (_, _) => const Divider(height: 1),
+                itemBuilder: (context, i) {
+                  if (i == 0) {
+                    return Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+                      child: Row(
+                        children: [
+                          CategoryAvatar(category, size: 36),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  formatMinor(a.total(list), a.currency),
+                                  style: text.titleLarge,
+                                ),
+                                Text(
+                                  '${list.length} transaction'
+                                  '${list.length == 1 ? '' : 's'} \u00B7 '
+                                  '$periodLabel',
+                                  style: text.bodySmall,
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  }
+                  return _TxnTile(txn: list[i - 1]);
+                },
+              ),
+      ),
     );
   }
 }
