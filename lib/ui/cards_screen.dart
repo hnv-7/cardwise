@@ -104,10 +104,25 @@ class CardsScreen extends StatelessWidget {
         if (app.data.transactions.any((t) => t.cardId == null))
           Padding(
             padding: const EdgeInsets.only(top: 12),
-            child: Text(
-              '${app.data.transactions.where((t) => t.cardId == null).length} '
-              'transaction(s) are not linked to a card.',
-              style: Theme.of(context).textTheme.bodySmall,
+            child: ListTile(
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.link_off),
+              title: Text(
+                '${app.data.transactions.where((t) => t.cardId == null).length} '
+                'transaction(s) are not linked to a card.',
+              ),
+              subtitle: const Text('Tap to review and assign them'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute<void>(
+                  builder: (_) => Scaffold(
+                    appBar: AppBar(title: const Text('Not linked')),
+                    body: const TransactionsScreen(initialUnlinked: true),
+                  ),
+                ),
+              ),
             ),
           ),
       ],

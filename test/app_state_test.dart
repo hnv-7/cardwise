@@ -735,4 +735,42 @@ void main() {
       expect(Categorizer.learnedCategory(learned, 'XYZA Stores'), isNull);
     });
   });
+
+  group('unlinked transactions', () {
+    test('filter lists only unlinked and bulk assign links them', () async {
+      await addCard();
+      await app.scanInbox(now: now);
+      final unlinked = app.analytics.transactions(
+        unlinkedOnly: true,
+        onlyPrimaryCurrency: false,
+      );
+      expect(unlinked.length, 1);
+      expect(unlinked.single.cardId, isNull);
+
+      final other = app.data.cards.single;
+      await app.assignCardToMany(unlinked.map((t) => t.id), other.id);
+      expect(
+        app.analytics.transactions(
+          unlinkedOnly: true,
+          onlyPrimaryCurrency: false,
+        ),
+        isEmpty,
+      );
+      expect(
+        app.data.transactions.every((t) => t.cardId == other.id),
+        isTrue,
+      );
+    });
+
+    test('bulk assign rejects an unknown card', () async {
+      await app.scanInbox(now: now);
+      expect(
+        () => app.assignCardToMany(
+          app.data.transactions.map((t) => t.id),
+          'missing',
+        ),
+        throwsA(isA<VaultException>()),
+      );
+    });
+  });
 }

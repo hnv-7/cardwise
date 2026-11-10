@@ -106,6 +106,7 @@ class Analytics {
 
   List<TxnRecord> transactions({
     String? cardId,
+    bool unlinkedOnly = false,
     DateTime? from,
     DateTime? to,
     SpendCategory? category,
@@ -114,6 +115,7 @@ class Analytics {
     final src = onlyPrimaryCurrency ? _inCurrency : data.transactions;
     final out = src.where((t) {
       if (cardId != null && t.cardId != cardId) return false;
+      if (unlinkedOnly && t.cardId != null) return false;
       if (category != null && t.category != category) return false;
       if (from != null && t.timestamp.isBefore(from)) return false;
       if (to != null && !t.timestamp.isBefore(to)) return false;

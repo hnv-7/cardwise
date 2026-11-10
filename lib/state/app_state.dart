@@ -349,6 +349,22 @@ class AppState extends ChangeNotifier {
     _with(transactions: _data.transactions.where((t) => t.id != id).toList()),
   );
 
+  /// Links many transactions to [cardId] in a single save.
+  Future<void> assignCardToMany(Iterable<String> txnIds, String cardId) {
+    if (cardById(cardId) == null) {
+      throw VaultException('Selected card no longer exists.');
+    }
+    final ids = txnIds.toSet();
+    return _commit(
+      _with(
+        transactions: [
+          for (final t in _data.transactions)
+            ids.contains(t.id) ? t.copyWith(cardId: cardId) : t,
+        ],
+      ),
+    );
+  }
+
   Future<void> assignCard(String txnId, String? cardId) => _commit(
     _with(
       transactions: [

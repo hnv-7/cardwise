@@ -10,10 +10,17 @@ import '../util/money.dart';
 import 'widgets.dart';
 
 class TransactionsScreen extends StatefulWidget {
-  const TransactionsScreen({super.key, this.cardId});
+  const TransactionsScreen({
+    super.key,
+    this.cardId,
+    this.initialUnlinked = false,
+  });
 
   /// When set, the list is fixed to a single card.
   final String? cardId;
+
+  /// Start with only the transactions that are not linked to a card.
+  final bool initialUnlinked;
 
   @override
   State<TransactionsScreen> createState() => _TransactionsScreenState();
@@ -22,14 +29,59 @@ class TransactionsScreen extends StatefulWidget {
 class _TransactionsScreenState extends State<TransactionsScreen> {
   String? _cardFilter;
   SpendCategory? _catFilter;
+  late bool _unlinked = widget.initialUnlinked;
+
+  Future<void> _assignAll(
+    BuildContext context,
+    AppState app,
+    List<TxnRecord> list,
+  ) async {
+    final cardId = await showDialog<String>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        title: Text('Assign ${list.length} to which card?'),
+        children: [
+          for (final c in app.data.cards)
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(ctx, c.id),
+              child: Row(
+                children: [
+                  CardDot(c),
+                  const SizedBox(width: 10),
+                  Expanded(child: Text(c.displayName)),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+    if (cardId == null || !context.mounted) return;
+    final card = app.cardById(cardId);
+    final ok = await confirm(
+      context,
+      title: 'Assign ${list.length} transactions?',
+      body: 'They will be linked to ${card?.displayName ?? 'the card'}.',
+      action: 'Assign',
+    );
+    if (!ok || !context.mounted) return;
+    await guarded(
+      context,
+      () => app.assignCardToMany(list.map((t) => t.id), cardId),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
     final app = context.watch<AppState>();
     final a = app.analytics;
     final cardId = widget.cardId ?? _cardFilter;
+    final unlinkedCount = app.data.transactions
+        .where((t) => t.cardId == null)
+        .length;
+    final unlinkedOnly = widget.cardId == null && _unlinked;
     final list = a.transactions(
       cardId: cardId,
+      unlinkedOnly: unlinkedOnly,
       category: _catFilter,
       onlyPrimaryCurrency: false,
     );
@@ -43,9 +95,22 @@ class _TransactionsScreenState extends State<TransactionsScreen> {
               scrollDirection: Axis.horizontal,
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
               children: [
+                FilterChip(
+                  avatar: const Icon(Icons.link_off, size: 18),
+                  label: Text('Not linked ($unlinkedCount)'),
+                  selected: _unlinked,
+                  onSelected: (v) => setState(() {
+                    _unlinked = v;
+                    if (v) _cardFilter = null;
+                  }),
+                ),
+                const SizedBox(width: 8),
                 PopupMenuButton<String?>(
                   tooltip: 'Filter by card',
-                  onSelected: (v) => setState(() => _cardFilter = v),
+                  onSelected: (v) => setState(() {
+                    _cardFilter = v;
+                    if (v != null) _unlinked = false;
+                  }),
                   itemBuilder: (_) => [
                     const PopupMenuItem(value: null, child: Text('All cards')),
                     for (final c in app.data.cards)
@@ -99,15 +164,37 @@ class _TransactionsScreenState extends State<TransactionsScreen> {
                   separatorBuilder: (_, _) => const Divider(height: 1),
                   itemBuilder: (context, i) {
                     if (i == 0) {
-                      return Align(
-                        alignment: Alignment.centerRight,
-                        child: TextButton.icon(
-                          onPressed: () => showTransactionEditor(
-                            context,
-                            cardId: widget.cardId,
-                          ),
-                          icon: const Icon(Icons.add),
-                          label: const Text('Add manually'),
+                      return Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                        child: Row(
+                          children: [
+                            if (unlinkedOnly)
+                              app.data.cards.isEmpty
+                                  ? const Expanded(
+                                      child: Padding(
+                                        padding: EdgeInsets.only(left: 8),
+                                        child: Text(
+                                          'Add a card in the Cards tab to '
+                                          'link these.',
+                                        ),
+                                      ),
+                                    )
+                                  : TextButton.icon(
+                                      onPressed: () =>
+                                          _assignAll(context, app, list),
+                                      icon: const Icon(Icons.link),
+                                      label: Text('Assign all (${list.length})'),
+                                    ),
+                            const Spacer(),
+                            TextButton.icon(
+                              onPressed: () => showTransactionEditor(
+                                context,
+                                cardId: widget.cardId,
+                              ),
+                              icon: const Icon(Icons.add),
+                              label: const Text('Add manually'),
+                            ),
+                          ],
                         ),
                       );
                     }
