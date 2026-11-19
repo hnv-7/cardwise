@@ -35,7 +35,9 @@ source (see Develop).
   the paste icon imports copied alerts instead (idempotent).
 - **Multi-card management**: add/edit/delete cards with a base cashback rate,
   per-category rates and an optional monthly cap. Transactions link to cards by
-  last 4 digits, including cards added after the scan.
+  last 4 digits, including cards added after the scan. Open a card to switch
+  between its current billing cycle and all-time spend, with estimated cashback
+  and cap status for each.
 - **Spending dashboard**: totals by category (donut), 6-month trend (bars) and
   per-card breakdown, filterable by period.
 - **Cashback**: estimated (rate x spend, with monthly cap) vs credited

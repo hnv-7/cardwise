@@ -5,8 +5,10 @@ import 'package:provider/provider.dart';
 
 import '../models/category.dart';
 import '../models/models.dart';
+import '../services/analytics.dart';
 import '../state/app_state.dart';
 import '../util/money.dart';
+import 'cards_screen.dart' show cycleLabel;
 import 'widgets.dart';
 
 class TransactionsScreen extends StatefulWidget {
@@ -30,6 +32,10 @@ class _TransactionsScreenState extends State<TransactionsScreen> {
   String? _cardFilter;
   SpendCategory? _catFilter;
   late bool _unlinked = widget.initialUnlinked;
+
+  /// Single-card mode only: show just the current billing cycle (default)
+  /// or every transaction on the card.
+  bool _thisCycle = true;
 
   Future<void> _assignAll(
     BuildContext context,
@@ -79,16 +85,30 @@ class _TransactionsScreenState extends State<TransactionsScreen> {
         .where((t) => t.cardId == null)
         .length;
     final unlinkedOnly = widget.cardId == null && _unlinked;
+    final fixedCard = app.cardById(widget.cardId);
+    final cycle = fixedCard == null
+        ? null
+        : BillingCycle.containing(DateTime.now(), fixedCard.billingDay);
+    final cycleStart = _thisCycle ? cycle?.start : null;
     final list = a.transactions(
       cardId: cardId,
       unlinkedOnly: unlinkedOnly,
+      from: cycleStart,
       category: _catFilter,
       onlyPrimaryCurrency: false,
     );
 
     return Column(
       children: [
-        if (widget.cardId == null)
+        if (fixedCard != null && cycle != null)
+          _CardPeriodHeader(
+            card: fixedCard,
+            cycle: cycle,
+            thisCycle: _thisCycle,
+            txns: list,
+            onChanged: (v) => setState(() => _thisCycle = v),
+          )
+        else if (widget.cardId == null)
           SizedBox(
             height: 56,
             child: ListView(
@@ -150,6 +170,10 @@ class _TransactionsScreenState extends State<TransactionsScreen> {
                   title: 'No transactions',
                   body: app.data.transactions.isEmpty
                       ? 'Scan your messages or add a transaction manually.'
+                      : cycleStart != null
+                      ? 'No spends on this card since '
+                            '${DateFormat('d MMM').format(cycleStart)}. '
+                            'Switch to All time to see older ones.'
                       : 'Nothing matches the current filters.',
                   action: FilledButton.tonalIcon(
                     onPressed: () =>
@@ -284,6 +308,118 @@ class CategoryTransactionsScreen extends StatelessWidget {
                   return _TxnTile(txn: list[i - 1]);
                 },
               ),
+      ),
+    );
+  }
+}
+
+/// Card detail header: switches between the card's current billing cycle and
+/// all of its transactions, with spend and estimated cashback for the choice.
+class _CardPeriodHeader extends StatelessWidget {
+  const _CardPeriodHeader({
+    required this.card,
+    required this.cycle,
+    required this.thisCycle,
+    required this.txns,
+    required this.onChanged,
+  });
+
+  final CardProfile card;
+  final BillingCycle cycle;
+  final bool thisCycle;
+
+  /// The transactions currently listed (any currency).
+  final List<TxnRecord> txns;
+  final ValueChanged<bool> onChanged;
+
+  String _caption(DateTime now) {
+    if (!thisCycle) {
+      return txns.isEmpty
+          ? 'All transactions on this card'
+          : 'Since ${DateFormat('d MMM yyyy').format(txns.last.timestamp)}';
+    }
+    // Calendar-day difference, immune to DST shifts.
+    final days = DateTime.utc(
+      cycle.lastDay.year,
+      cycle.lastDay.month,
+      cycle.lastDay.day,
+    ).difference(DateTime.utc(now.year, now.month, now.day)).inDays;
+    final due = switch (days) {
+      0 => 'statement today',
+      1 => 'statement tomorrow',
+      _ => 'statement in $days days',
+    };
+    return 'Cycle ${cycleLabel(cycle)} · $due';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final a = context.read<AppState>().analytics;
+    final cur = a.currency;
+    final spend = a.total(txns.where((t) => t.currency == cur).toList());
+    final summary = a.cashbackFor(card);
+    final cap = card.cycleCapMinor;
+    final cashback = thisCycle
+        ? summary.perCycle[cycle.key] ?? 0
+        : summary.estimatedMinor;
+    final cashbackHint = !thisCycle
+        ? 'Credited ${formatMinor(summary.creditedMinor, cur)}'
+        : cap == null
+        ? 'No cap'
+        : summary.cappedCycles.contains(cycle.key)
+        ? 'Cap reached'
+        : 'Cap ${formatMinor(cap, cur)}';
+    final n = txns.length;
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          SegmentedButton<bool>(
+            showSelectedIcon: false,
+            segments: const [
+              ButtonSegment(
+                value: true,
+                icon: Icon(Icons.today_outlined),
+                label: Text('This cycle'),
+              ),
+              ButtonSegment(
+                value: false,
+                icon: Icon(Icons.history),
+                label: Text('All time'),
+              ),
+            ],
+            selected: {thisCycle},
+            onSelectionChanged: (s) => onChanged(s.first),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(4, 8, 4, 4),
+            child: Text(
+              _caption(DateTime.now()),
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ),
+          Row(
+            children: [
+              Expanded(
+                child: StatTile(
+                  label: thisCycle ? 'Spent this cycle' : 'Total spent',
+                  value: formatMinor(spend, cur),
+                  hint: '$n transaction${n == 1 ? '' : 's'}',
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: StatTile(
+                  label: 'Est. cashback',
+                  value: formatMinor(cashback, cur),
+                  hint: cashbackHint,
+                ),
+              ),
+            ],
+          ),
+        ],
       ),
     );
   }
