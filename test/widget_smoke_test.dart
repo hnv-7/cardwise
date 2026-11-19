@@ -145,4 +145,57 @@ void main() {
     expect(find.text('Travel'), findsOneWidget);
     expect(find.textContaining('3 transactions'), findsOneWidget);
   });
+
+  testWidgets('card detail switches between this cycle and all time', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1080, 3000);
+    tester.view.devicePixelRatio = 2.0;
+    addTearDown(tester.view.reset);
+
+    final app = AppState(vault: MemoryVault(), sms: FakeSms([]));
+    await app.load();
+    await app.saveCard(
+      name: 'Everyday',
+      issuer: '',
+      last4: '1111',
+      colorValue: 0xFF3B5BDB,
+      defaultRateBps: 100,
+      categoryRatesBps: const {},
+    );
+    final cardId = app.data.cards.single.id;
+    Future<void> add(String m, DateTime t) => app.saveTransaction(
+      cardId: cardId,
+      amountMinor: 10000,
+      currency: 'INR',
+      merchant: m,
+      category: SpendCategory.shopping,
+      timestamp: t,
+    );
+    await add('Fresh Mart', DateTime.now());
+    // Calendar-month cycle: 75 days ago is always in an earlier cycle.
+    await add('Old Mart', DateTime.now().subtract(const Duration(days: 75)));
+
+    await tester.pumpWidget(
+      ChangeNotifierProvider.value(value: app, child: const CardwiseApp()),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Cards'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Everyday'));
+    await tester.pumpAndSettle();
+
+    // Defaults to the current cycle.
+    expect(find.text('Spent this cycle'), findsOneWidget);
+    expect(find.text('Fresh Mart'), findsOneWidget);
+    expect(find.text('Old Mart'), findsNothing);
+    expect(find.text('1 transaction'), findsOneWidget);
+
+    await tester.tap(find.text('All time'));
+    await tester.pumpAndSettle();
+    expect(find.text('Total spent'), findsOneWidget);
+    expect(find.text('Fresh Mart'), findsOneWidget);
+    expect(find.text('Old Mart'), findsOneWidget);
+    expect(find.text('2 transactions'), findsOneWidget);
+  });
 }
