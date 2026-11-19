@@ -70,10 +70,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
       endAgo: _period.endAgo,
     );
     final total = a.total(txns);
-    final byCat = a.byCategory(txns).entries.toList()
+    // Refunds can leave a category or card net negative for a period; charts
+    // only show what was actually spent.
+    final byCat = a.byCategory(txns).entries.where((e) => e.value > 0).toList()
       ..sort((x, y) => y.value.compareTo(x.value));
-    final byCard = a.byCard(txns).entries.toList()
+    final catTotal = byCat.fold<int>(0, (s, e) => s + e.value);
+    final byCard = a.byCard(txns).entries.where((e) => e.value > 0).toList()
       ..sort((x, y) => y.value.compareTo(x.value));
+    final cardTotal = byCard.fold<int>(0, (s, e) => s + e.value);
+    final dues = a.upcomingPayments(now: now);
     final trend = a.cycleTrend(a.transactions(), cycles: 6, now: now);
     final summaries = a.periodSummaries(
       _period.cycles,
@@ -85,6 +90,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 96),
       children: [
+        if (dues.isNotEmpty) ...[
+          _PaymentsDue(dues: dues, currency: cur, now: now),
+          const SizedBox(height: 12),
+        ],
         Wrap(
           spacing: 8,
           children: [
@@ -138,7 +147,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         else
           _CategoryChart(
             entries: byCat,
-            total: total,
+            total: catTotal,
             currency: cur,
             period: _period,
           ),
@@ -151,8 +160,102 @@ class _DashboardScreenState extends State<DashboardScreen> {
             child: Text('No spending in this period.'),
           )
         else
-          _CardBreakdown(entries: byCard, total: total, currency: cur),
+          _CardBreakdown(entries: byCard, total: cardTotal, currency: cur),
       ],
+    );
+  }
+}
+
+/// Statements with a payment coming up, soonest first, each with a button to
+/// mark it paid.
+class _PaymentsDue extends StatelessWidget {
+  const _PaymentsDue({
+    required this.dues,
+    required this.currency,
+    required this.now,
+  });
+  final List<PaymentDue> dues;
+  final String currency;
+  final DateTime now;
+
+  @override
+  Widget build(BuildContext context) {
+    final app = context.read<AppState>();
+    final t = Theme.of(context);
+    return Card(
+      elevation: 0,
+      color: t.colorScheme.secondaryContainer,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 12, 8, 4),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(
+                  Icons.event_note_outlined,
+                  size: 20,
+                  color: t.colorScheme.onSecondaryContainer,
+                ),
+                const SizedBox(width: 8),
+                Text('Payments due', style: t.textTheme.titleSmall),
+              ],
+            ),
+            for (final d in dues)
+              Builder(
+                builder: (context) {
+                  final days = d.daysLeft(now);
+                  final when = switch (days) {
+                    0 => 'due today',
+                    1 => 'due tomorrow',
+                    _ => 'due in $days days',
+                  };
+                  return Row(
+                    children: [
+                      CardDot(d.card),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              d.card.displayName,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            Text(
+                              '${formatMinor(d.amountMinor, currency)} \u00B7 '
+                              '${DateFormat('d MMM').format(d.dueDate)} '
+                              '($when)',
+                              style: t.textTheme.bodySmall?.copyWith(
+                                color: days <= 3 ? t.colorScheme.error : null,
+                                fontWeight: days <= 3 ? FontWeight.w600 : null,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      TextButton(
+                        onPressed: () => guarded(
+                          context,
+                          () => app.setStatementPaid(d.key, true),
+                        ),
+                        child: const Text('Mark paid'),
+                      ),
+                    ],
+                  );
+                },
+              ),
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Text(
+                'Amounts are this app\'s total for the statement cycle; check '
+                'your bank statement before paying.',
+                style: t.textTheme.bodySmall,
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

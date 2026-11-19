@@ -55,6 +55,12 @@ VaultData _sample() {
       cycleCapMinor: 100000,
       billingDay: 5,
       createdAt: now.subtract(const Duration(days: 200)),
+      merchantRates: const [
+        MerchantRate(keyword: 'Style Street', bps: 500, capMinor: 50000),
+      ],
+      categoryCapsMinor: const {SpendCategory.dining: 40000},
+      creditLimitMinor: 20000000,
+      paymentDueDays: 18,
     ),
     CardProfile(
       id: 'c2',
@@ -70,6 +76,8 @@ VaultData _sample() {
       cycleCapMinor: null,
       billingDay: 15,
       createdAt: now.subtract(const Duration(days: 200)),
+      creditLimitMinor: 35000000,
+      paymentDueDays: 20,
     ),
   ];
 
@@ -116,7 +124,41 @@ VaultData _sample() {
       );
     }
   }
+  // One refund, and the available limit the newest alert of each card
+  // reported.
+  txns.add(
+    TxnRecord(
+      id: 't${n++}',
+      cardId: cards[0].id,
+      cardLast4Hint: cards[0].last4,
+      amountMinor: 129900,
+      currency: 'INR',
+      merchant: 'Style Street',
+      category: SpendCategory.shopping,
+      timestamp: now.subtract(const Duration(hours: 5)),
+      source: TxnSource.manual,
+      dedupeKey: null,
+      kind: TxnKind.refund,
+    ),
+  );
   txns.sort((a, b) => b.timestamp.compareTo(a.timestamp));
+  for (final (i, avail) in [(0, 13850000), (1, 31240000)]) {
+    final k = txns.indexWhere((t) => t.cardId == cards[i].id && !t.isRefund);
+    final t = txns[k];
+    txns[k] = TxnRecord(
+      id: t.id,
+      cardId: t.cardId,
+      cardLast4Hint: t.cardLast4Hint,
+      amountMinor: t.amountMinor,
+      currency: t.currency,
+      merchant: t.merchant,
+      category: t.category,
+      timestamp: t.timestamp,
+      source: t.source,
+      dedupeKey: t.dedupeKey,
+      availableLimitMinor: avail,
+    );
+  }
 
   final credits = [
     for (var m = 1; m <= 3; m++)

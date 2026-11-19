@@ -333,7 +333,29 @@ class _CardCashback extends StatelessWidget {
                   Chip(
                     visualDensity: VisualDensity.compact,
                     avatar: Icon(r.key.icon, size: 16, color: r.key.color),
-                    label: Text('${r.key.label} ${formatRate(r.value)}'),
+                    label: Text(
+                      '${r.key.label} ${formatRate(r.value)}'
+                      '${_capNote(card.categoryCapsMinor[r.key], summary.usedIn(now, 'c:${r.key.name}'))}',
+                    ),
+                  ),
+                for (final e in card.categoryCapsMinor.entries)
+                  if (!card.categoryRatesBps.containsKey(e.key))
+                    Chip(
+                      visualDensity: VisualDensity.compact,
+                      avatar: Icon(e.key.icon, size: 16, color: e.key.color),
+                      label: Text(
+                        '${e.key.label}'
+                        '${_capNote(e.value, summary.usedIn(now, 'c:${e.key.name}'))}',
+                      ),
+                    ),
+                for (final m in card.merchantRates)
+                  Chip(
+                    visualDensity: VisualDensity.compact,
+                    avatar: const Icon(Icons.storefront_outlined, size: 16),
+                    label: Text(
+                      '${m.keyword} ${formatRate(m.bps)}'
+                      '${_capNote(m.capMinor, summary.usedIn(now, 'm:${m.keyword}'))}',
+                    ),
                   ),
               ],
             ),
@@ -363,6 +385,12 @@ class _CardCashback extends StatelessWidget {
       ),
     );
   }
+
+  /// " · 120/500 cap" for a capped rate (earned this cycle of the cap).
+  String _capNote(int? cap, int used) => cap == null
+      ? ''
+      : ' \u00B7 ${formatMinorCompact(used, currency)}'
+            '/${formatMinorCompact(cap, currency)} cap';
 
   Future<void> _addCredit(BuildContext context, AppState app) async {
     final ctrl = TextEditingController();

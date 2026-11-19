@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import '../services/sms_source.dart';
 import '../state/app_state.dart';
 import '../util/money.dart';
+import 'backup_flow.dart';
 import 'widgets.dart';
 
 String _summary(ScanResult r) {
@@ -14,7 +15,8 @@ String _summary(ScanResult r) {
         : 'No credit card transactions found in ${r.scanned} messages.';
   }
   final parts = <String>[
-    '${r.added} new transaction${r.added == 1 ? '' : 's'}',
+    '${r.added} new transaction${r.added == 1 ? '' : 's'}'
+        '${r.refunds > 0 ? ' (${r.refunds} refund${r.refunds == 1 ? '' : 's'})' : ''}',
     if (r.cashbackCredits > 0)
       '${r.cashbackCredits} cashback credit${r.cashbackCredits == 1 ? '' : 's'}',
   ];
@@ -235,7 +237,7 @@ class _SettingsSheet extends StatelessWidget {
   Widget build(BuildContext context) {
     final app = context.watch<AppState>();
     return SafeArea(
-      child: Padding(
+      child: SingleChildScrollView(
         padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -267,6 +269,22 @@ class _SettingsSheet extends StatelessWidget {
             const SizedBox(height: 12),
             ListTile(
               contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.backup_outlined),
+              title: const Text('Back up to a file'),
+              subtitle: const Text(
+                'Password-protected, to move your data to a new phone',
+              ),
+              onTap: () => backupFlow(context),
+            ),
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.restore_outlined),
+              title: const Text('Restore from a backup'),
+              subtitle: const Text('Replaces the data on this device'),
+              onTap: () => restoreFlow(context),
+            ),
+            ListTile(
+              contentPadding: EdgeInsets.zero,
               leading: const Icon(Icons.delete_forever_outlined),
               title: const Text('Erase all data'),
               subtitle: const Text('Deletes cards, transactions and the key'),
@@ -289,7 +307,8 @@ class _SettingsSheet extends StatelessWidget {
             Text(
               'Privacy: data is encrypted with AES-256-GCM using a key held in '
               'the device keystore, excluded from cloud backup, and never '
-              'leaves your phone.',
+              'leaves your phone unless you save a backup file. Backups are '
+              'encrypted with your password.',
               style: Theme.of(context).textTheme.bodySmall,
             ),
           ],

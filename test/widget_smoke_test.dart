@@ -2,9 +2,11 @@ import 'dart:ui' show Size;
 
 import 'package:cc_app/main.dart';
 import 'package:cc_app/models/category.dart';
+import 'package:cc_app/models/models.dart';
+import 'package:cc_app/services/analytics.dart' show BillingCycle;
 import 'package:cc_app/services/sms_source.dart';
 import 'package:cc_app/state/app_state.dart';
-import 'package:flutter/material.dart' show ChoiceChip;
+import 'package:flutter/material.dart' show ChoiceChip, SearchBar, TextField;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
 
@@ -197,5 +199,167 @@ void main() {
     expect(find.text('Fresh Mart'), findsOneWidget);
     expect(find.text('Old Mart'), findsOneWidget);
     expect(find.text('2 transactions'), findsOneWidget);
+  });
+
+  Future<AppState> appWithCard({int? dueDays}) async {
+    final app = AppState(vault: MemoryVault(), sms: FakeSms([]));
+    await app.load();
+    await app.saveCard(
+      name: 'Everyday',
+      issuer: '',
+      last4: '1111',
+      colorValue: 0xFF3B5BDB,
+      defaultRateBps: 100,
+      categoryRatesBps: const {SpendCategory.dining: 500},
+      paymentDueDays: dueDays,
+    );
+    return app;
+  }
+
+  Future<void> add(
+    AppState app,
+    String merchant,
+    DateTime when, {
+    SpendCategory category = SpendCategory.shopping,
+  }) => app.saveTransaction(
+    cardId: app.data.cards.single.id,
+    amountMinor: 10000,
+    currency: 'INR',
+    merchant: merchant,
+    category: category,
+    timestamp: when,
+  );
+
+  void tallScreen(WidgetTester tester) {
+    tester.view.physicalSize = const Size(1080, 3000);
+    tester.view.devicePixelRatio = 2.0;
+    addTearDown(tester.view.reset);
+  }
+
+  testWidgets('Activity search filters by merchant and amount', (tester) async {
+    tallScreen(tester);
+    final app = await appWithCard();
+    await add(
+      app,
+      'Corner Cafe',
+      DateTime.now(),
+      category: SpendCategory.dining,
+    );
+    await add(app, 'Big Mart', DateTime.now());
+    await tester.pumpWidget(
+      ChangeNotifierProvider.value(value: app, child: const CardwiseApp()),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Activity'));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(SearchBar), findsOneWidget);
+    await tester.enterText(find.byType(SearchBar), 'corner');
+    await tester.pumpAndSettle();
+    expect(find.text('Corner Cafe'), findsOneWidget);
+    expect(find.text('Big Mart'), findsNothing);
+    expect(find.textContaining('1 result'), findsOneWidget);
+
+    await tester.enterText(find.byType(SearchBar), 'zzz');
+    await tester.pumpAndSettle();
+    expect(find.text('Nothing matches "zzz".'), findsOneWidget);
+  });
+
+  testWidgets('card page shows the last statement and hides the card name '
+      'on rows', (tester) async {
+    tallScreen(tester);
+    final app = await appWithCard(dueDays: 30);
+    final last = BillingCycle.containing(DateTime.now(), 1).plus(-1);
+    await add(app, 'Last Month Shop', last.start.add(const Duration(days: 2)));
+    await add(app, 'Fresh Mart', DateTime.now());
+    await tester.pumpWidget(
+      ChangeNotifierProvider.value(value: app, child: const CardwiseApp()),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Cards'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Everyday'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Fresh Mart'), findsOneWidget);
+    expect(find.text('Last Month Shop'), findsNothing);
+    // Rows show only the date, not "Everyday ••1111 · ...".
+    expect(find.textContaining('Everyday ••1111 ·'), findsNothing);
+
+    await tester.tap(find.text('Last cycle'));
+    await tester.pumpAndSettle();
+    expect(find.text('Statement spend'), findsOneWidget);
+    expect(find.text('Last Month Shop'), findsOneWidget);
+    expect(find.text('Fresh Mart'), findsNothing);
+    expect(find.textContaining(' · due '), findsOneWidget);
+
+    await tester.tap(find.text('Mark paid'));
+    await tester.pumpAndSettle();
+    expect(find.text('Paid'), findsOneWidget);
+    expect(app.data.paidStatements.length, 1);
+  });
+
+  testWidgets('Overview lists a payment due until it is marked paid', (
+    tester,
+  ) async {
+    tallScreen(tester);
+    final app = await appWithCard(dueDays: 30);
+    final last = BillingCycle.containing(DateTime.now(), 1).plus(-1);
+    await add(app, 'Last Month Shop', last.start.add(const Duration(days: 2)));
+    await tester.pumpWidget(
+      ChangeNotifierProvider.value(value: app, child: const CardwiseApp()),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Payments due'), findsOneWidget);
+    await tester.tap(find.text('Mark paid'));
+    await tester.pumpAndSettle();
+    expect(find.text('Payments due'), findsNothing);
+  });
+
+  testWidgets('which-card screen ranks cards for a purchase', (tester) async {
+    tallScreen(tester);
+    final app = AppState(vault: MemoryVault(), sms: FakeSms([]));
+    await app.load();
+    await app.saveCard(
+      name: 'Diner',
+      issuer: '',
+      last4: '1111',
+      colorValue: 0xFF3B5BDB,
+      defaultRateBps: 100,
+      categoryRatesBps: const {SpendCategory.dining: 500},
+    );
+    await app.saveCard(
+      name: 'Shopper',
+      issuer: '',
+      last4: '2222',
+      colorValue: 0xFF0CA678,
+      defaultRateBps: 150,
+      categoryRatesBps: const {},
+      merchantRates: const [MerchantRate(keyword: 'Amazon', bps: 1000)],
+    );
+    await tester.pumpWidget(
+      ChangeNotifierProvider.value(value: app, child: const CardwiseApp()),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Cards'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Which card should I use?'));
+    await tester.pumpAndSettle();
+
+    double top(String name) =>
+        tester.getTopLeft(find.textContaining('$name ••')).dy;
+
+    // Shopping by default: Shopper's 1.5% base beats Diner's 1%.
+    expect(top('Shopper'), lessThan(top('Diner')));
+    await tester.tap(find.widgetWithText(ChoiceChip, 'Dining'));
+    await tester.pumpAndSettle();
+    expect(top('Diner'), lessThan(top('Shopper')));
+    expect(find.text('₹50.00'), findsOneWidget); // 5% of 1,000
+
+    await tester.enterText(find.byType(TextField).at(1), 'Amazon');
+    await tester.pumpAndSettle();
+    expect(top('Shopper'), lessThan(top('Diner')));
+    expect(find.textContaining('at Amazon'), findsOneWidget);
+    expect(find.text('\u20B9100.00'), findsOneWidget); // 10% of 1,000
   });
 }

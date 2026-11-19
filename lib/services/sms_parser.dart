@@ -6,7 +6,7 @@ import '../models/category.dart';
 import '../util/money.dart';
 import 'categorizer.dart';
 
-enum ParsedKind { spend, cashbackCredit }
+enum ParsedKind { spend, refund, cashbackCredit }
 
 /// The structured result of parsing one message.
 class ParsedMessage {
@@ -19,6 +19,7 @@ class ParsedMessage {
     required this.category,
     required this.timestamp,
     required this.dedupeKey,
+    this.availableLimitMinor,
   });
 
   final ParsedKind kind;
@@ -29,12 +30,16 @@ class ParsedMessage {
   final SpendCategory category;
   final DateTime timestamp;
   final String dedupeKey;
+
+  /// Available credit limit stated in the alert ("Avl Lmt: Rs 85,000").
+  final int? availableLimitMinor;
 }
 
 /// Parses credit card transaction alerts. Pure Dart, no I/O, so it is fully
-/// unit-testable. Anything that is not clearly a credit card spend or a
-/// cashback credit (OTPs, refunds, statements, promotions, debit card or bank
-/// account alerts) is rejected by returning null.
+/// unit-testable. Anything that is not clearly a credit card spend, a
+/// completed refund to a credit card or a cashback credit (OTPs, pending
+/// refunds, statements, promotions, debit card or bank account alerts) is
+/// rejected by returning null.
 class SmsParser {
   SmsParser._();
 
@@ -66,6 +71,26 @@ class SmsParser {
     caseSensitive: false,
   );
 
+  static final RegExp _refundWord = RegExp(
+    r'\b(refund(ed)?|revers(al|ed))\b',
+    caseSensitive: false,
+  );
+  static final RegExp _refundDone = RegExp(
+    r'\b(credited|processed|reversed|posted|received)\b',
+    caseSensitive: false,
+  );
+  // Merchant notices ("refund initiated, will be credited in 5-7 days") come
+  // before the bank's own alert; only the bank alert is imported.
+  static final RegExp _refundNotYet = RegExp(
+    r'\b(will\s+be|to\s+be|initiated|within|expected|request(ed)?|'
+    r'declined|failed|unsuccessful|rejected)\b',
+    caseSensitive: false,
+  );
+  static final RegExp _refundFrom = RegExp(
+    r'\b(?:from|by)\s+' + _name + _stop,
+    caseSensitive: false,
+  );
+
   static final RegExp _spendVerb = RegExp(
     r'\b(spent|purchase|purchased|debited|charge|charged|used|txn|transaction|'
     r'payment|paid|swiped)\b',
@@ -91,6 +116,12 @@ class SmsParser {
   static final RegExp _amount = RegExp(
     r'(?<![a-z])(rs\.?|inr|\u20B9|usd|us\$|\$|eur|\u20AC|gbp|\u00A3|aed|sgd|'
     r'aud|cad)\s*(\d[\d,]*(?:\.\d{1,2})?)',
+    caseSensitive: false,
+  );
+  static final RegExp _availableLimit = RegExp(
+    r'\b(?:avl|avail(?:able)?)\.?\s*(?:credit\s*|cr\.?\s*)?'
+    r'(?:lmt|limit|bal(?:ance)?)\.?\s*(?:is|of)?\s*[:\-]?\s*'
+    r'(?:rs\.?|inr|\u20B9)?\s*(\d[\d,]*(?:\.\d{1,2})?)',
     caseSensitive: false,
   );
   static final RegExp _balanceContext = RegExp(
@@ -344,6 +375,9 @@ class SmsParser {
     if (_debitCardOnly.hasMatch(text) && !_creditWord.hasMatch(text)) {
       return null;
     }
+    if (_refundWord.hasMatch(text) && !_cashbackWord.hasMatch(text)) {
+      return _parseRefund(text, body, received, clock);
+    }
     if (_reject.hasMatch(text)) return null;
     if (!_spendVerb.hasMatch(text)) return null;
 
@@ -361,7 +395,43 @@ class SmsParser {
       category: Categorizer.categorize(merchant, text),
       timestamp: when,
       dedupeKey: messageKey(body, received),
+      availableLimitMinor: _extractAvailableLimit(text),
     );
+  }
+
+  static ParsedMessage? _parseRefund(
+    String text,
+    String body,
+    DateTime received,
+    DateTime clock,
+  ) {
+    if (_refundNotYet.hasMatch(text) || !_refundDone.hasMatch(text)) {
+      return null;
+    }
+    final amount = _firstSpendAmount(text);
+    if (amount == null) return null;
+    String? merchant;
+    for (final m in _refundFrom.allMatches(text)) {
+      merchant = _cleanMerchant(m.group(1)!);
+      if (merchant != null) break;
+    }
+    merchant ??= _extractMerchant(text) ?? 'Refund';
+    return ParsedMessage(
+      kind: ParsedKind.refund,
+      amountMinor: amount.$1,
+      currency: amount.$2,
+      last4: _extractLast4(text),
+      merchant: merchant,
+      category: Categorizer.categorize(merchant),
+      timestamp: _extractDate(text, clock) ?? received,
+      dedupeKey: messageKey(body, received),
+      availableLimitMinor: _extractAvailableLimit(text),
+    );
+  }
+
+  static int? _extractAvailableLimit(String text) {
+    final m = _availableLimit.firstMatch(text);
+    return m == null ? null : parseAmountMinor(m.group(1)!);
   }
 
   static ParsedMessage? _parseCashback(

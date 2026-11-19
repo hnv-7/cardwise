@@ -110,7 +110,8 @@ class _RecoveryScreen extends StatelessWidget {
           body:
               '$message\n\nThis can happen after a device restore, because '
               'the encryption key never leaves the device. You can retry, or '
-              'erase the stored data and start fresh.',
+              'erase the stored data and start fresh. If you saved a backup '
+              'file, restore it from Settings after erasing.',
           action: Column(
             mainAxisSize: MainAxisSize.min,
             children: [

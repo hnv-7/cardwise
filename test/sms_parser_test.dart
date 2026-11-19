@@ -90,6 +90,71 @@ void main() {
     });
   });
 
+  group('refunds', () {
+    test('bank refund alert with merchant and available limit', () {
+      final p = parse(
+        'Rs 499.00 refund credited to your HDFC Bank Credit Card XX1234 from '
+        'AMAZON on 10-11-24. Avl Lmt: Rs 50,000.00',
+      );
+      expect(p, isNotNull);
+      expect(p!.kind, ParsedKind.refund);
+      expect(p.amountMinor, 49900);
+      expect(p.last4, '1234');
+      expect(p.merchant, 'Amazon');
+      expect(p.category, SpendCategory.shopping);
+      expect(p.timestamp, DateTime(2024, 11, 10));
+      expect(p.availableLimitMinor, 5000000);
+    });
+
+    test('reversal of a transaction', () {
+      final p = parse(
+        'Reversal of INR 250.00 for txn at ZOMATO on your ICICI Bank Credit '
+        'Card XX9876 has been processed.',
+      );
+      expect(p, isNotNull);
+      expect(p!.kind, ParsedKind.refund);
+      expect(p.amountMinor, 25000);
+      expect(p.last4, '9876');
+      expect(p.merchant, 'Zomato');
+    });
+
+    test('refund without a merchant', () {
+      final p = parse('Refund of Rs 500 processed to your Credit Card XX1234.');
+      expect(p, isNotNull);
+      expect(p!.kind, ParsedKind.refund);
+      expect(p.amountMinor, 50000);
+      expect(p.merchant, 'Refund');
+    });
+  });
+
+  group('available limit', () {
+    test('read from spend alerts in common formats', () {
+      int? limit(String s) => parse(s)?.availableLimitMinor;
+      expect(
+        limit(
+          'Rs.1,250.50 spent on HDFC Bank Credit Card XX4321 at SWIGGY on '
+          '09-11-2024:19:45:10. Avl Lmt: Rs.85,000.00',
+        ),
+        8500000,
+      );
+      expect(
+        limit(
+          'INR 3,499.00 spent using ICICI Bank Card XX9876 on 08-Nov-24 on '
+          'AMAZON PAY. Avl Limit: INR 1,20,000.00.',
+        ),
+        12000000,
+      );
+      expect(
+        limit(
+          'Rs 100 spent on Credit Card XX0001 at CAFE. Available Credit Limit '
+          'is Rs.12,345.67',
+        ),
+        1234567,
+      );
+      expect(limit('Rs 100 spent on Credit Card XX0001 at CAFE.'), isNull);
+    });
+  });
+
   group('rejects', () {
     final cases = <String, String>{
       'otp':
@@ -97,7 +162,13 @@ void main() {
           'share.',
       'debit': 'Rs 500 spent on your Debit Card XX1234 at AMAZON.',
       'bank account': 'Rs 500 debited from A/c XX1234 on 10-11-24 UPI.',
-      'refund': 'Refund of Rs 500 processed to your Credit Card XX1234.',
+      'refund not yet credited':
+          'Refund of Rs 500 initiated for your order. It will be credited to '
+          'your Credit Card XX1234 in 5-7 days.',
+      'refund to debit card':
+          'Refund of Rs 500 credited to your Debit Card XX1234 from AMAZON.',
+      'cashback reversal':
+          'Cashback of Rs 50 reversed on your Credit Card XX1234.',
       'payment received':
           'Payment of Rs 5,000 received on your Credit Card XX1234. Thank you.',
       'statement':

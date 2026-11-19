@@ -29,22 +29,39 @@ source (see Develop).
 
 - **SMS scanning (Android)**: the **Scan messages** button reads the inbox
   (`READ_SMS`, requested at runtime after an in-app disclosure) and parses
-  credit card alerts. Message text is never stored, only amount, merchant,
-  category, time and last 4 digits, plus a SHA-256 hash used for de-duplication.
+  credit card alerts, including completed refunds. Message text is never
+  stored, only amount, merchant, category, time, last 4 digits and the
+  available limit if the alert states one, plus a SHA-256 hash used for
+  de-duplication.
 - **Paste import (iOS and Android)**: iOS does not allow apps to read SMS, so
   the paste icon imports copied alerts instead (idempotent).
 - **Multi-card management**: add/edit/delete cards with a base cashback rate,
-  per-category rates and an optional monthly cap. Transactions link to cards by
-  last 4 digits, including cards added after the scan. Open a card to switch
-  between its current billing cycle and all-time spend, with estimated cashback
-  and cap status for each.
+  per-category rates and caps, merchant rates (e.g. 5% at Amazon, with an
+  optional cap), a cap per billing cycle, a credit limit and a payment due day.
+  Transactions link to cards by last 4 digits, including cards added after the
+  scan.
+- **Card page**: switch between the current billing cycle, the last statement
+  and all-time spend, with estimated cashback and cap status for each; mark a
+  statement as paid.
+- **Which card to use?**: enter an amount, category and optional merchant to
+  rank your cards by the cashback the purchase would earn now, after what is
+  left of this cycle's caps.
+- **Payment reminders**: cards with a due day show the next payment on the
+  Overview and Cards tabs until it is marked paid (in-app; no notifications).
+- **Credit limit use**: the latest available limit from alerts, against the
+  card's credit limit.
+- **Refunds**: imported from SMS or added by hand; they lower spend and take
+  back the cashback they would have earned.
 - **Spending dashboard**: totals by category (donut), 6-month trend (bars) and
   per-card breakdown, filterable by period.
-- **Cashback**: estimated (rate x spend, with monthly cap) vs credited
+- **Activity search**: by merchant, category, card or amount.
+- **Cashback**: estimated (rates x spend, with caps) vs credited
   (manual log or detected "cashback credited" SMS), per category, per card and
   as a 6-month running total.
 - **Categorisation**: keyword rules (`lib/services/categorizer.dart`);
   every transaction can be re-categorised or edited manually.
+- **Backup and restore**: Settings saves a password-protected file you can keep
+  anywhere and restore on a new phone.
 
 ## Security
 
@@ -57,6 +74,11 @@ source (see Develop).
   units. Inputs are validated in `AppState`; failed writes roll back state.
 - If the vault cannot be decrypted (e.g. after a device restore) the app offers
   retry or erase instead of crashing.
+- Backup files are encrypted with AES-256-GCM using a key derived from your
+  password (PBKDF2-HMAC-SHA256, 210,000 iterations, random salt); the header
+  is authenticated too. The password is never stored, so a forgotten password
+  cannot be recovered. Files are saved and opened through the system file
+  picker, so no storage permission is needed.
 
 ## Google Play note
 
