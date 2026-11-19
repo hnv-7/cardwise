@@ -2,6 +2,36 @@ import 'category.dart';
 
 enum TxnSource { sms, pasted, manual }
 
+/// A purchase, or money returned to the card for an earlier purchase.
+enum TxnKind { spend, refund }
+
+/// A higher (or lower) cashback rate for one merchant, e.g. 5% on Amazon,
+/// optionally with its own cap per billing cycle.
+class MerchantRate {
+  const MerchantRate({required this.keyword, required this.bps, this.capMinor});
+
+  /// Matched as whole words against the normalized merchant name
+  /// (see `Categorizer.merchantKey`), e.g. "amazon" or "swiggy".
+  final String keyword;
+  final int bps;
+  final int? capMinor;
+
+  Map<String, Object?> toJson() => {
+    'keyword': keyword,
+    'bps': bps,
+    'capMinor': capMinor,
+  };
+
+  static MerchantRate? fromJson(Object? j) {
+    if (j is! Map) return null;
+    final k = j['keyword'];
+    final b = j['bps'];
+    final c = j['capMinor'];
+    if (k is! String || k.trim().isEmpty || b is! int) return null;
+    return MerchantRate(keyword: k, bps: b, capMinor: c is int ? c : null);
+  }
+}
+
 /// A credit card profile with its cashback configuration.
 class CardProfile {
   const CardProfile({
@@ -15,6 +45,10 @@ class CardProfile {
     required this.cycleCapMinor,
     required this.billingDay,
     required this.createdAt,
+    this.merchantRates = const [],
+    this.categoryCapsMinor = const {},
+    this.creditLimitMinor,
+    this.paymentDueDays,
   });
 
   final String id;
@@ -37,6 +71,19 @@ class CardProfile {
   final int billingDay;
   final DateTime createdAt;
 
+  /// Merchant-specific rates; they take priority over category rates.
+  final List<MerchantRate> merchantRates;
+
+  /// Max cashback per billing cycle for a category, in minor units.
+  final Map<SpendCategory, int> categoryCapsMinor;
+
+  /// Total credit limit in minor units; null when not set.
+  final int? creditLimitMinor;
+
+  /// Days after the statement date that payment is due (e.g. 18); null when
+  /// not set, which turns payment reminders off for the card.
+  final int? paymentDueDays;
+
   int rateFor(SpendCategory c) => categoryRatesBps[c] ?? defaultRateBps;
 
   String get displayName => '$name \u2022\u2022$last4';
@@ -51,6 +98,8 @@ class CardProfile {
     int? cycleCapMinor,
     int? billingDay,
     bool clearCap = false,
+    List<MerchantRate>? merchantRates,
+    Map<SpendCategory, int>? categoryCapsMinor,
   }) => CardProfile(
     id: id,
     name: name ?? this.name,
@@ -62,6 +111,10 @@ class CardProfile {
     cycleCapMinor: clearCap ? null : (cycleCapMinor ?? this.cycleCapMinor),
     billingDay: billingDay ?? this.billingDay,
     createdAt: createdAt,
+    merchantRates: merchantRates ?? this.merchantRates,
+    categoryCapsMinor: categoryCapsMinor ?? this.categoryCapsMinor,
+    creditLimitMinor: creditLimitMinor,
+    paymentDueDays: paymentDueDays,
   );
 
   Map<String, Object?> toJson() => {
@@ -75,16 +128,26 @@ class CardProfile {
     'cycleCapMinor': cycleCapMinor,
     'billingDay': billingDay,
     'createdAt': createdAt.millisecondsSinceEpoch,
+    'merchantRates': merchantRates.map((m) => m.toJson()).toList(),
+    'categoryCapsMinor': categoryCapsMinor.map((k, v) => MapEntry(k.name, v)),
+    'creditLimitMinor': creditLimitMinor,
+    'paymentDueDays': paymentDueDays,
   };
 
   factory CardProfile.fromJson(Map<String, Object?> j) {
-    final rates = <SpendCategory, int>{};
-    final raw = j['categoryRatesBps'];
-    if (raw is Map) {
-      raw.forEach((k, v) {
-        if (v is int) rates[SpendCategory.fromName(k as String?)] = v;
-      });
+    Map<SpendCategory, int> catMap(String key) {
+      final out = <SpendCategory, int>{};
+      final raw = j[key];
+      if (raw is Map) {
+        raw.forEach((k, v) {
+          if (v is int) out[SpendCategory.fromName(k as String?)] = v;
+        });
+      }
+      return out;
     }
+
+    final due = j['paymentDueDays'];
+    final limit = j['creditLimitMinor'];
     return CardProfile(
       id: j['id']! as String,
       name: j['name']! as String,
@@ -92,7 +155,7 @@ class CardProfile {
       last4: j['last4']! as String,
       colorValue: j['color']! as int,
       defaultRateBps: (j['defaultRateBps'] as int?) ?? 0,
-      categoryRatesBps: rates,
+      categoryRatesBps: catMap('categoryRatesBps'),
       // 'monthlyCapMinor' is the key used before billing cycles existed.
       cycleCapMinor: (j['cycleCapMinor'] ?? j['monthlyCapMinor']) as int?,
       billingDay: (() {
@@ -100,6 +163,13 @@ class CardProfile {
         return d is int && d >= 1 && d <= 28 ? d : 1;
       })(),
       createdAt: DateTime.fromMillisecondsSinceEpoch(j['createdAt']! as int),
+      merchantRates: [
+        for (final m in (j['merchantRates'] as List?) ?? const [])
+          ?MerchantRate.fromJson(m),
+      ],
+      categoryCapsMinor: catMap('categoryCapsMinor'),
+      creditLimitMinor: limit is int && limit > 0 ? limit : null,
+      paymentDueDays: due is int && due >= 1 && due <= 30 ? due : null,
     );
   }
 }
@@ -117,6 +187,8 @@ class TxnRecord {
     required this.timestamp,
     required this.source,
     required this.dedupeKey,
+    this.kind = TxnKind.spend,
+    this.availableLimitMinor,
   });
 
   final String id;
@@ -137,6 +209,17 @@ class TxnRecord {
   /// SHA-256 of the originating message; the message itself is never stored.
   final String? dedupeKey;
 
+  /// [amountMinor] is always positive; refunds reduce totals.
+  final TxnKind kind;
+
+  /// Available credit limit reported in the alert, if any.
+  final int? availableLimitMinor;
+
+  bool get isRefund => kind == TxnKind.refund;
+
+  /// Amount with sign applied: negative for refunds.
+  int get signedMinor => isRefund ? -amountMinor : amountMinor;
+
   TxnRecord copyWith({
     String? cardId,
     bool clearCard = false,
@@ -145,6 +228,7 @@ class TxnRecord {
     String? merchant,
     SpendCategory? category,
     DateTime? timestamp,
+    TxnKind? kind,
   }) => TxnRecord(
     id: id,
     cardId: clearCard ? null : (cardId ?? this.cardId),
@@ -156,6 +240,8 @@ class TxnRecord {
     timestamp: timestamp ?? this.timestamp,
     source: source,
     dedupeKey: dedupeKey,
+    kind: kind ?? this.kind,
+    availableLimitMinor: availableLimitMinor,
   );
 
   Map<String, Object?> toJson() => {
@@ -169,6 +255,8 @@ class TxnRecord {
     'timestamp': timestamp.millisecondsSinceEpoch,
     'source': source.name,
     'dedupeKey': dedupeKey,
+    if (isRefund) 'kind': kind.name,
+    if (availableLimitMinor != null) 'availableLimitMinor': availableLimitMinor,
   };
 
   factory TxnRecord.fromJson(Map<String, Object?> j) => TxnRecord(
@@ -185,6 +273,10 @@ class TxnRecord {
       orElse: () => TxnSource.manual,
     ),
     dedupeKey: j['dedupeKey'] as String?,
+    kind: j['kind'] == TxnKind.refund.name ? TxnKind.refund : TxnKind.spend,
+    availableLimitMinor: j['availableLimitMinor'] is int
+        ? j['availableLimitMinor'] as int
+        : null,
   );
 }
 
@@ -249,6 +341,7 @@ class VaultData {
     this.primaryCurrency = 'INR',
     this.lastScanMillis,
     this.merchantCategories = const {},
+    this.paidStatements = const {},
   });
 
   final List<CardProfile> cards;
@@ -261,6 +354,14 @@ class VaultData {
   /// (see `Categorizer.merchantKey`). Takes priority over keyword rules.
   final Map<String, SpendCategory> merchantCategories;
 
+  /// Statements marked as paid, as `statementKey` values.
+  final Set<String> paidStatements;
+
+  /// Identifies one card's statement: the billing cycle starting in
+  /// [year]/[month].
+  static String statementKey(String cardId, int year, int month) =>
+      '$cardId:$year-$month';
+
   Map<String, Object?> toJson() => {
     'version': 1,
     'cards': cards.map((c) => c.toJson()).toList(),
@@ -269,6 +370,7 @@ class VaultData {
     'primaryCurrency': primaryCurrency,
     'lastScanMillis': lastScanMillis,
     'merchantCategories': merchantCategories.map((k, v) => MapEntry(k, v.name)),
+    'paidStatements': paidStatements.toList(),
   };
 
   factory VaultData.fromJson(Map<String, Object?> j) {
@@ -292,6 +394,10 @@ class VaultData {
       primaryCurrency: (j['primaryCurrency'] as String?) ?? 'INR',
       lastScanMillis: j['lastScanMillis'] as int?,
       merchantCategories: learned,
+      paidStatements: {
+        for (final s in (j['paidStatements'] as List?) ?? const [])
+          if (s is String) s,
+      },
     );
   }
 }

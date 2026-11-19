@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import '../models/category.dart';
 import '../models/models.dart';
 import '../services/analytics.dart';
+import '../services/backup.dart';
 import '../services/sms_parser.dart';
 import '../services/sms_source.dart';
 import '../services/categorizer.dart';
@@ -18,10 +19,16 @@ class ScanResult {
     required this.duplicates,
     required this.cashbackCredits,
     required this.unlinked,
+    this.refunds = 0,
   });
 
   final int scanned;
+
+  /// New transactions, refunds included.
   final int added;
+
+  /// How many of [added] are refunds.
+  final int refunds;
   final int duplicates;
   final int cashbackCredits;
 
@@ -37,7 +44,16 @@ class AppState extends ChangeNotifier {
 
   VaultData _data = const VaultData();
   VaultData get data => _data;
-  Analytics get analytics => Analytics(_data);
+
+  /// Calculations for the current data; reused until the data changes, so
+  /// expensive results (cashback per card) are computed once per change.
+  Analytics get analytics {
+    final cached = _analytics;
+    if (cached != null && identical(cached.data, _data)) return cached;
+    return _analytics = Analytics(_data);
+  }
+
+  Analytics? _analytics;
 
   bool _loaded = false;
   bool get loaded => _loaded;
@@ -54,6 +70,7 @@ class AppState extends ChangeNotifier {
   static const int maxCards = 30;
   static const int maxTransactions = 20000;
   static const int maxMerchantLength = 60;
+  static const int maxMerchantRates = 20;
 
   final _rng = Random.secure();
   String _newId() =>
@@ -98,30 +115,52 @@ class AppState extends ChangeNotifier {
 
   // ---- settings -----------------------------------------------------------
 
-  Future<void> setPrimaryCurrency(String code) => _commit(
-    VaultData(
-      cards: _data.cards,
-      transactions: _data.transactions,
-      credits: _data.credits,
-      primaryCurrency: currencyFor(code).code,
-      lastScanMillis: _data.lastScanMillis,
-      merchantCategories: _data.merchantCategories,
-    ),
-  );
+  Future<void> setPrimaryCurrency(String code) =>
+      _commit(_with(primaryCurrency: currencyFor(code).code));
 
   VaultData _with({
     List<CardProfile>? cards,
     List<TxnRecord>? transactions,
     List<CashbackCredit>? credits,
+    String? primaryCurrency,
     int? lastScanMillis,
     Map<String, SpendCategory>? merchantCategories,
+    Set<String>? paidStatements,
   }) => VaultData(
     cards: cards ?? _data.cards,
     transactions: transactions ?? _data.transactions,
     credits: credits ?? _data.credits,
-    primaryCurrency: _data.primaryCurrency,
+    primaryCurrency: primaryCurrency ?? _data.primaryCurrency,
     lastScanMillis: lastScanMillis ?? _data.lastScanMillis,
     merchantCategories: merchantCategories ?? _data.merchantCategories,
+    paidStatements: paidStatements ?? _data.paidStatements,
+  );
+
+  // ---- backup -------------------------------------------------------------
+
+  /// Everything, encrypted with a key derived from [password].
+  Future<Uint8List> exportBackup(String password) =>
+      Backup.encrypt(_data, password);
+
+  /// Replaces all data on this device with the contents of a backup file.
+  Future<void> restoreBackup(Uint8List file, String password) async {
+    final restored = await Backup.decrypt(file, password);
+    if (restored.transactions.length > maxTransactions ||
+        restored.cards.length > maxCards) {
+      throw VaultException('This backup is larger than the app supports.');
+    }
+    await _commit(restored);
+  }
+
+  // ---- payments -----------------------------------------------------------
+
+  /// Marks a statement (see `PaymentDue.key`) as paid or unpaid.
+  Future<void> setStatementPaid(String key, bool paid) => _commit(
+    _with(
+      paidStatements: paid
+          ? {..._data.paidStatements, key}
+          : (_data.paidStatements.toSet()..remove(key)),
+    ),
   );
 
   // ---- cards --------------------------------------------------------------
@@ -137,6 +176,10 @@ class AppState extends ChangeNotifier {
     int? cycleCapMinor,
     int billingDay = 1,
     String? editingId,
+    List<MerchantRate> merchantRates = const [],
+    Map<SpendCategory, int> categoryCapsMinor = const {},
+    int? creditLimitMinor,
+    int? paymentDueDays,
   }) {
     if (name.trim().isEmpty) return 'Enter a card name.';
     if (name.trim().length > 40) return 'Card name is too long.';
@@ -155,6 +198,31 @@ class AppState extends ChangeNotifier {
     if (cycleCapMinor != null && cycleCapMinor <= 0) {
       return 'Cashback cap must be greater than zero.';
     }
+    if (categoryCapsMinor.values.any((c) => c <= 0)) {
+      return 'Category caps must be greater than zero.';
+    }
+    if (merchantRates.length > maxMerchantRates) {
+      return 'You can add up to $maxMerchantRates merchant rates.';
+    }
+    final keywords = <String>{};
+    for (final m in merchantRates) {
+      final k = Categorizer.merchantKey(m.keyword);
+      if (k.isEmpty || m.keyword.trim().length > 30) {
+        return 'Enter a merchant name (letters) for each merchant rate.';
+      }
+      if (!keywords.add(k)) return 'Merchant "${m.keyword}" is listed twice.';
+      if (badRate(m.bps)) return 'Cashback rates must be between 0% and 100%.';
+      if (m.capMinor != null && m.capMinor! <= 0) {
+        return 'Merchant caps must be greater than zero.';
+      }
+    }
+    if (creditLimitMinor != null &&
+        (creditLimitMinor <= 0 || creditLimitMinor > maxAmountMinor)) {
+      return 'Enter a valid credit limit or leave it empty.';
+    }
+    if (paymentDueDays != null && (paymentDueDays < 1 || paymentDueDays > 30)) {
+      return 'Payment due days must be between 1 and 30.';
+    }
     if (editingId == null && _data.cards.length >= maxCards) {
       return 'You can track up to $maxCards cards.';
     }
@@ -171,6 +239,10 @@ class AppState extends ChangeNotifier {
     required Map<SpendCategory, int> categoryRatesBps,
     int? cycleCapMinor,
     int billingDay = 1,
+    List<MerchantRate> merchantRates = const [],
+    Map<SpendCategory, int> categoryCapsMinor = const {},
+    int? creditLimitMinor,
+    int? paymentDueDays,
   }) async {
     final error = validateCard(
       name: name,
@@ -180,6 +252,10 @@ class AppState extends ChangeNotifier {
       cycleCapMinor: cycleCapMinor,
       billingDay: billingDay,
       editingId: id,
+      merchantRates: merchantRates,
+      categoryCapsMinor: categoryCapsMinor,
+      creditLimitMinor: creditLimitMinor,
+      paymentDueDays: paymentDueDays,
     );
     if (error != null) throw VaultException(error);
 
@@ -196,6 +272,17 @@ class AppState extends ChangeNotifier {
       createdAt: id == null
           ? DateTime.now()
           : _data.cards.firstWhere((c) => c.id == id).createdAt,
+      merchantRates: [
+        for (final m in merchantRates)
+          MerchantRate(
+            keyword: m.keyword.trim(),
+            bps: m.bps,
+            capMinor: m.capMinor,
+          ),
+      ],
+      categoryCapsMinor: Map.of(categoryCapsMinor),
+      creditLimitMinor: creditLimitMinor,
+      paymentDueDays: paymentDueDays,
     );
     final cards = id == null
         ? [..._data.cards, card]
@@ -272,6 +359,7 @@ class AppState extends ChangeNotifier {
     required String merchant,
     required SpendCategory category,
     required DateTime timestamp,
+    TxnKind kind = TxnKind.spend,
   }) async {
     final error = validateTransaction(
       amountMinor: amountMinor,
@@ -297,6 +385,7 @@ class AppState extends ChangeNotifier {
         timestamp: timestamp,
         source: TxnSource.manual,
         dedupeKey: null,
+        kind: kind,
       );
       // A manually added transaction whose category differs from the automatic
       // guess is treated as a correction and remembered.
@@ -334,6 +423,7 @@ class AppState extends ChangeNotifier {
                       merchant: merchant.trim(),
                       category: category,
                       timestamp: timestamp,
+                      kind: kind,
                     )
                   : (learn && Categorizer.merchantKey(t.merchant) == key)
                   ? t.copyWith(category: category)
@@ -466,6 +556,7 @@ class AppState extends ChangeNotifier {
     final newCredits = <CashbackCredit>[];
     var dupes = 0;
     var unlinked = 0;
+    var refunds = 0;
     final budget = maxTransactions - _data.transactions.length;
 
     for (final m in messages) {
@@ -494,6 +585,8 @@ class AppState extends ChangeNotifier {
       } else {
         if (newTxns.length >= budget) break;
         if (cardId == null) unlinked++;
+        final refund = p.kind == ParsedKind.refund;
+        if (refund) refunds++;
         newTxns.add(
           TxnRecord(
             id: _newId(),
@@ -511,6 +604,8 @@ class AppState extends ChangeNotifier {
             timestamp: p.timestamp,
             source: source,
             dedupeKey: key,
+            kind: refund ? TxnKind.refund : TxnKind.spend,
+            availableLimitMinor: p.availableLimitMinor,
           ),
         );
       }
@@ -530,6 +625,7 @@ class AppState extends ChangeNotifier {
       duplicates: dupes,
       cashbackCredits: newCredits.length,
       unlinked: unlinked,
+      refunds: refunds,
     );
   }
 }

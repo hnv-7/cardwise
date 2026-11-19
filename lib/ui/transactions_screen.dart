@@ -28,14 +28,23 @@ class TransactionsScreen extends StatefulWidget {
   State<TransactionsScreen> createState() => _TransactionsScreenState();
 }
 
+/// Which slice of a single card's transactions is shown.
+enum CardRange { thisCycle, lastCycle, all }
+
 class _TransactionsScreenState extends State<TransactionsScreen> {
   String? _cardFilter;
   SpendCategory? _catFilter;
   late bool _unlinked = widget.initialUnlinked;
+  final _search = TextEditingController();
 
-  /// Single-card mode only: show just the current billing cycle (default)
-  /// or every transaction on the card.
-  bool _thisCycle = true;
+  /// Single-card mode only.
+  CardRange _range = CardRange.thisCycle;
+
+  @override
+  void dispose() {
+    _search.dispose();
+    super.dispose();
+  }
 
   Future<void> _assignAll(
     BuildContext context,
@@ -86,29 +95,57 @@ class _TransactionsScreenState extends State<TransactionsScreen> {
         .length;
     final unlinkedOnly = widget.cardId == null && _unlinked;
     final fixedCard = app.cardById(widget.cardId);
-    final cycle = fixedCard == null
+    final current = fixedCard == null
         ? null
         : BillingCycle.containing(DateTime.now(), fixedCard.billingDay);
-    final cycleStart = _thisCycle ? cycle?.start : null;
-    final list = a.transactions(
-      cardId: cardId,
-      unlinkedOnly: unlinkedOnly,
-      from: cycleStart,
-      category: _catFilter,
-      onlyPrimaryCurrency: false,
-    );
+    final shown = switch (_range) {
+      CardRange.thisCycle => current,
+      CardRange.lastCycle => current?.plus(-1),
+      CardRange.all => null,
+    };
+    final query = widget.cardId == null ? _search.text : '';
+    final list = a
+        .transactions(
+          cardId: cardId,
+          unlinkedOnly: unlinkedOnly,
+          from: shown?.start,
+          to: shown?.end,
+          category: _catFilter,
+          onlyPrimaryCurrency: false,
+        )
+        .where((t) => matchesSearch(t, query, card: app.cardById(t.cardId)))
+        .toList();
 
     return Column(
       children: [
-        if (fixedCard != null && cycle != null)
+        if (fixedCard != null && current != null)
           _CardPeriodHeader(
             card: fixedCard,
-            cycle: cycle,
-            thisCycle: _thisCycle,
+            current: current,
+            range: _range,
             txns: list,
-            onChanged: (v) => setState(() => _thisCycle = v),
+            onChanged: (v) => setState(() => _range = v),
           )
-        else if (widget.cardId == null)
+        else if (widget.cardId == null) ...[
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+            child: SearchBar(
+              controller: _search,
+              hintText: 'Search merchant, category or amount',
+              elevation: const WidgetStatePropertyAll(0),
+              constraints: const BoxConstraints(minHeight: 48),
+              leading: const Icon(Icons.search),
+              trailing: [
+                if (_search.text.isNotEmpty)
+                  IconButton(
+                    tooltip: 'Clear search',
+                    icon: const Icon(Icons.close),
+                    onPressed: () => setState(_search.clear),
+                  ),
+              ],
+              onChanged: (_) => setState(() {}),
+            ),
+          ),
           SizedBox(
             height: 56,
             child: ListView(
@@ -163,6 +200,7 @@ class _TransactionsScreenState extends State<TransactionsScreen> {
               ],
             ),
           ),
+        ],
         Expanded(
           child: list.isEmpty
               ? EmptyState(
@@ -170,9 +208,11 @@ class _TransactionsScreenState extends State<TransactionsScreen> {
                   title: 'No transactions',
                   body: app.data.transactions.isEmpty
                       ? 'Scan your messages or add a transaction manually.'
-                      : cycleStart != null
-                      ? 'No spends on this card since '
-                            '${DateFormat('d MMM').format(cycleStart)}. '
+                      : query.trim().isNotEmpty
+                      ? 'Nothing matches "${query.trim()}".'
+                      : shown != null
+                      ? 'No spends on this card in '
+                            '${cycleLabel(shown)}. '
                             'Switch to All time to see older ones.'
                       : 'Nothing matches the current filters.',
                   action: FilledButton.tonalIcon(
@@ -211,6 +251,16 @@ class _TransactionsScreenState extends State<TransactionsScreen> {
                                         'Assign all (${list.length})',
                                       ),
                                     ),
+                            if (query.trim().isNotEmpty)
+                              Padding(
+                                padding: const EdgeInsets.only(left: 8),
+                                child: Text(
+                                  '${list.length} result'
+                                  '${list.length == 1 ? '' : 's'} \u00B7 '
+                                  '${formatMinor(a.total(list.where((t) => t.currency == a.currency).toList()), a.currency)}',
+                                  style: Theme.of(context).textTheme.bodySmall,
+                                ),
+                              ),
                             const Spacer(),
                             TextButton.icon(
                               onPressed: () => showTransactionEditor(
@@ -224,7 +274,10 @@ class _TransactionsScreenState extends State<TransactionsScreen> {
                         ),
                       );
                     }
-                    return _TxnTile(txn: list[i - 1]);
+                    return _TxnTile(
+                      txn: list[i - 1],
+                      showCard: widget.cardId == null,
+                    );
                   },
                 ),
         ),
@@ -313,56 +366,70 @@ class CategoryTransactionsScreen extends StatelessWidget {
   }
 }
 
-/// Card detail header: switches between the card's current billing cycle and
-/// all of its transactions, with spend and estimated cashback for the choice.
+/// Card detail header: switches between the card's current billing cycle,
+/// its last statement and all of its transactions, with spend and estimated
+/// cashback for the choice.
 class _CardPeriodHeader extends StatelessWidget {
   const _CardPeriodHeader({
     required this.card,
-    required this.cycle,
-    required this.thisCycle,
+    required this.current,
+    required this.range,
     required this.txns,
     required this.onChanged,
   });
 
   final CardProfile card;
-  final BillingCycle cycle;
-  final bool thisCycle;
+  final BillingCycle current;
+  final CardRange range;
 
   /// The transactions currently listed (any currency).
   final List<TxnRecord> txns;
-  final ValueChanged<bool> onChanged;
+  final ValueChanged<CardRange> onChanged;
+
+  static int _daysUntil(DateTime day, DateTime now) => DateTime.utc(
+    day.year,
+    day.month,
+    day.day,
+  ).difference(DateTime.utc(now.year, now.month, now.day)).inDays;
 
   String _caption(DateTime now) {
-    if (!thisCycle) {
-      return txns.isEmpty
-          ? 'All transactions on this card'
-          : 'Since ${DateFormat('d MMM yyyy').format(txns.last.timestamp)}';
+    switch (range) {
+      case CardRange.thisCycle:
+        final days = _daysUntil(current.lastDay, now);
+        final due = switch (days) {
+          0 => 'statement today',
+          1 => 'statement tomorrow',
+          _ => 'statement in $days days',
+        };
+        return 'Cycle ${cycleLabel(current)} · $due';
+      case CardRange.lastCycle:
+        final stmt = current.plus(-1);
+        final dueDays = card.paymentDueDays;
+        if (dueDays == null) return 'Statement ${cycleLabel(stmt)}';
+        final last = stmt.lastDay;
+        final due = DateTime(last.year, last.month, last.day + dueDays);
+        return 'Statement ${cycleLabel(stmt)} · '
+            'due ${DateFormat('d MMM').format(due)}';
+      case CardRange.all:
+        return txns.isEmpty
+            ? 'All transactions on this card'
+            : 'Since ${DateFormat('d MMM yyyy').format(txns.last.timestamp)}';
     }
-    // Calendar-day difference, immune to DST shifts.
-    final days = DateTime.utc(
-      cycle.lastDay.year,
-      cycle.lastDay.month,
-      cycle.lastDay.day,
-    ).difference(DateTime.utc(now.year, now.month, now.day)).inDays;
-    final due = switch (days) {
-      0 => 'statement today',
-      1 => 'statement tomorrow',
-      _ => 'statement in $days days',
-    };
-    return 'Cycle ${cycleLabel(cycle)} · $due';
   }
 
   @override
   Widget build(BuildContext context) {
-    final a = context.read<AppState>().analytics;
+    final app = context.watch<AppState>();
+    final a = app.analytics;
     final cur = a.currency;
     final spend = a.total(txns.where((t) => t.currency == cur).toList());
     final summary = a.cashbackFor(card);
     final cap = card.cycleCapMinor;
-    final cashback = thisCycle
-        ? summary.perCycle[cycle.key] ?? 0
-        : summary.estimatedMinor;
-    final cashbackHint = !thisCycle
+    final cycle = range == CardRange.lastCycle ? current.plus(-1) : current;
+    final cashback = range == CardRange.all
+        ? summary.estimatedMinor
+        : summary.perCycle[cycle.key] ?? 0;
+    final cashbackHint = range == CardRange.all
         ? 'Credited ${formatMinor(summary.creditedMinor, cur)}'
         : cap == null
         ? 'No cap'
@@ -370,41 +437,68 @@ class _CardPeriodHeader extends StatelessWidget {
         ? 'Cap reached'
         : 'Cap ${formatMinor(cap, cur)}';
     final n = txns.length;
+    final stmtKey = VaultData.statementKey(
+      card.id,
+      current.plus(-1).key.year,
+      current.plus(-1).key.month,
+    );
+    final paid = app.data.paidStatements.contains(stmtKey);
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          SegmentedButton<bool>(
+          SegmentedButton<CardRange>(
             showSelectedIcon: false,
             segments: const [
               ButtonSegment(
-                value: true,
-                icon: Icon(Icons.today_outlined),
+                value: CardRange.thisCycle,
                 label: Text('This cycle'),
               ),
               ButtonSegment(
-                value: false,
-                icon: Icon(Icons.history),
-                label: Text('All time'),
+                value: CardRange.lastCycle,
+                label: Text('Last cycle'),
               ),
+              ButtonSegment(value: CardRange.all, label: Text('All time')),
             ],
-            selected: {thisCycle},
+            selected: {range},
             onSelectionChanged: (s) => onChanged(s.first),
           ),
           Padding(
             padding: const EdgeInsets.fromLTRB(4, 8, 4, 4),
-            child: Text(
-              _caption(DateTime.now()),
-              style: Theme.of(context).textTheme.bodySmall,
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    _caption(DateTime.now()),
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ),
+                if (range == CardRange.lastCycle &&
+                    card.paymentDueDays != null &&
+                    spend > 0)
+                  FilterChip(
+                    visualDensity: VisualDensity.compact,
+                    label: Text(paid ? 'Paid' : 'Mark paid'),
+                    selected: paid,
+                    onSelected: (v) => guarded(
+                      context,
+                      () => app.setStatementPaid(stmtKey, v),
+                    ),
+                  ),
+              ],
             ),
           ),
           Row(
             children: [
               Expanded(
                 child: StatTile(
-                  label: thisCycle ? 'Spent this cycle' : 'Total spent',
+                  label: switch (range) {
+                    CardRange.thisCycle => 'Spent this cycle',
+                    CardRange.lastCycle => 'Statement spend',
+                    CardRange.all => 'Total spent',
+                  },
                   value: formatMinor(spend, cur),
                   hint: '$n transaction${n == 1 ? '' : 's'}',
                 ),
@@ -426,14 +520,31 @@ class _CardPeriodHeader extends StatelessWidget {
 }
 
 class _TxnTile extends StatelessWidget {
-  const _TxnTile({required this.txn});
+  const _TxnTile({required this.txn, this.showCard = true});
   final TxnRecord txn;
+
+  /// False on a card's own page, where every row is the same card.
+  final bool showCard;
 
   @override
   Widget build(BuildContext context) {
     final app = context.read<AppState>();
     final card = app.cardById(txn.cardId);
     final fmt = DateFormat('d MMM yyyy, h:mm a');
+    final scheme = Theme.of(context).colorScheme;
+    final refundColor = Theme.of(context).brightness == Brightness.dark
+        ? Colors.green.shade300
+        : Colors.green.shade800;
+    final cardText =
+        card?.displayName ??
+        (txn.cardLast4Hint != null
+            ? 'Card \u2022\u2022${txn.cardLast4Hint} (not added)'
+            : 'No card');
+    final parts = [
+      if (txn.isRefund) 'Refund',
+      if (showCard) cardText,
+      fmt.format(txn.timestamp),
+    ];
     return Dismissible(
       key: ValueKey(txn.id),
       direction: DismissDirection.endToStart,
@@ -454,20 +565,20 @@ class _TxnTile extends StatelessWidget {
         title: Text(txn.merchant, overflow: TextOverflow.ellipsis),
         subtitle: Row(
           children: [
-            CardDot(card),
-            const SizedBox(width: 6),
+            if (showCard) ...[CardDot(card), const SizedBox(width: 6)],
             Expanded(
               child: Text(
-                '${card?.displayName ?? (txn.cardLast4Hint != null ? 'Card ••${txn.cardLast4Hint} (not added)' : 'No card')}'
-                ' \u00B7 ${fmt.format(txn.timestamp)}',
+                parts.join(' \u00B7 '),
                 overflow: TextOverflow.ellipsis,
               ),
             ),
           ],
         ),
         trailing: Text(
-          formatMinor(txn.amountMinor, txn.currency),
-          style: Theme.of(context).textTheme.titleSmall,
+          '${txn.isRefund ? '+' : ''}'
+          '${formatMinor(txn.amountMinor, txn.currency)}',
+          style: Theme.of(context).textTheme.titleSmall
+              ?.copyWith(color: txn.isRefund ? refundColor : scheme.onSurface),
         ),
         onTap: () => showTransactionEditor(context, existing: txn),
       ),
@@ -503,6 +614,7 @@ class _TxnEditorState extends State<_TxnEditor> {
   late SpendCategory _category;
   late DateTime _when;
   late String _currency;
+  late bool _refund;
   String? _cardId;
   String? _error;
   bool _busy = false;
@@ -520,6 +632,7 @@ class _TxnEditorState extends State<_TxnEditor> {
     _when = e?.timestamp ?? DateTime.now();
     _currency = e?.currency ?? app.data.primaryCurrency;
     _cardId = e?.cardId ?? widget.cardId;
+    _refund = e?.isRefund ?? false;
   }
 
   @override
@@ -580,6 +693,7 @@ class _TxnEditorState extends State<_TxnEditor> {
         merchant: _merchant.text,
         category: _category,
         timestamp: _when,
+        kind: _refund ? TxnKind.refund : TxnKind.spend,
       ),
     );
     if (!mounted) return;
@@ -689,7 +803,15 @@ class _TxnEditorState extends State<_TxnEditor> {
             ],
             onChanged: (v) => setState(() => _cardId = v),
           ),
-          const SizedBox(height: 12),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('Refund'),
+            subtitle: const Text(
+              'Money returned to the card. Lowers spend and cashback.',
+            ),
+            value: _refund,
+            onChanged: (v) => setState(() => _refund = v),
+          ),
           OutlinedButton.icon(
             onPressed: _pickDate,
             icon: const Icon(Icons.event),
